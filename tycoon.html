@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Block Tycoon — Three.js (как в Roblox)</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;font-family:Inter,system-ui,Arial,sans-serif;color:#e8ecf1}
+  #app{position:fixed;inset:0} canvas{display:block}
+  #hud{position:fixed;top:0;left:0;right:0;display:flex;gap:10px;padding:10px 12px;pointer-events:none;align-items:flex-start;justify-content:space-between;z-index:5}
+  .panel{background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 12px;backdrop-filter:blur(6px)}
+  #stats{display:flex;gap:10px;flex-wrap:wrap}
+  .stat-num{font-size:20px;font-weight:800;color:#ffd75e}
+  .stat-sub{font-size:12px;color:#9fb0c8}
+  #objective{max-width:330px;font-size:13px;line-height:1.45}
+  #objective b{color:#ffd75e}
+  #prompt{position:fixed;bottom:86px;left:50%;transform:translateX(-50%);background:#ffd75e;color:#111;font-weight:800;font-size:15px;padding:10px 18px;border-radius:999px;display:none;z-index:5;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;z-index:5}
+  .toast{background:#111725;border:1px solid #33415f;color:#fff;padding:8px 14px;border-radius:999px;font-size:13px;white-space:nowrap}
+  #shop{position:fixed;left:12px;top:86px;display:flex;flex-direction:column;gap:6px;z-index:5;max-width:250px}
+  .shop-item{background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:7px 10px;font-size:13px}
+  .shop-item.owned{border-color:#37e05b;opacity:.75}
+  .shop-item.owned .price{color:#37e05b}
+  .shop-item .price{color:#ffd75e;font-weight:800}
+  .shop-item.afford{border-color:#ffd75e}
+  #overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(0,0,0,.55),rgba(0,0,0,.88));z-index:10}
+  #card{max-width:620px;width:92%;background:#111725;border:1px solid #2a3550;border-radius:16px;padding:28px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+  #card h1{margin:0 0 6px;font-size:40px;letter-spacing:1px;color:#ffd75e}
+  #card h1 span{color:#fff}
+  #card p{color:#b9c4d6;font-size:14px;line-height:1.6}
+  #card kbd{background:#222c40;border:1px solid #3a4a6b;border-bottom-width:3px;border-radius:6px;padding:1px 7px;font-size:12px;color:#fff}
+  #btn{margin-top:16px;background:#ffd75e;border:0;border-radius:10px;padding:12px 20px;font-weight:800;font-size:16px;cursor:pointer;color:#111}
+  #btn:hover{filter:brightness(1.05)}
+  #topBtns{position:fixed;right:12px;bottom:14px;display:flex;gap:8px;z-index:6}
+  #topBtns button{background:rgba(17,23,37,.9);border:1px solid #3a4a6b;color:#fff;border-radius:10px;padding:10px 14px;font-weight:700;font-size:13px;cursor:pointer}
+  #lockHint{position:fixed;bottom:14px;left:12px;z-index:6;font-size:12px;color:#9fb0c8;background:rgba(10,14,22,.7);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 10px;pointer-events:none;max-width:300px}
+  #back{position:fixed;top:86px;right:12px;z-index:6;font-size:12px}
+  #back a{color:#9fb0c8;text-decoration:none;background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 10px}
+  #joy{position:fixed;left:16px;bottom:60px;width:110px;height:110px;border-radius:50%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);display:none;z-index:6;touch-action:none}
+  #stick{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;background:#ffd75e}
+  @media (pointer:coarse){ #joy{display:block} }
+</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud" style="display:none">
+  <div id="stats">
+    <div class="panel"><div class="stat-sub">CASH</div><div class="stat-num" id="cashTxt">$0</div></div>
+    <div class="panel"><div class="stat-sub">ДОХОД / 2 сек</div><div class="stat-num" id="incTxt" style="color:#37e05b">+$5</div></div>
+    <div class="panel"><div class="stat-sub">ДРОППЕР</div><div class="stat-num" id="lvlTxt" style="color:#fff">LVL 1</div></div>
+    <div class="panel"><div class="stat-sub">ПРОГРЕСС</div><div class="stat-num" id="progTxt" style="color:#7ab8ff">0/4</div></div>
+  </div>
+  <div class="panel" id="objective">Встань на жёлтый <b>ClaimPad</b> и нажми <b>[E]</b>.</div>
+</div>
+<div id="shop" style="display:none"></div>
+<div id="back"><a href="./index.html">← PAYDAY: Block Heist</a></div>
+<div id="prompt"></div>
+<div id="toast"></div>
+<div id="lockHint" style="display:none">Клик по экрану = поворот камеры мышью · стрелки тоже работают</div>
+<div id="topBtns" style="display:none">
+  <button id="actBtn">✋ E</button>
+  <button id="saveBtn">💾 Сейв</button>
+  <button id="resetBtn">🗑 Сброс</button>
+</div>
+<div id="joy"><div id="stick"></div></div>
+<div id="overlay">
+  <div id="card">
+    <h1>TYCOON<span>: BLOCK EMPIRE</span></h1>
+    <p>Three.js-версия роблокс-тайкуна из <b>roblox-tycoon/TycoonServer.luau</b>: 2 базы, жёлтый ClaimPad, капающий Cash, 4 покупки, сейв.</p>
+    <p><kbd>WASD</kbd> идти · мышь — камера · <kbd>E</kbd> занять / купить · <kbd>Shift</kbd> бег · телефон: левый стик + кнопка ✋</p>
+    <p>Товары: 🧱 Стены <b>$50</b> · 🟢 Дроппер LVL2 +$10 <b>$100</b> · 🏠 Крыша <b>$200</b> · 🟠 Дроппер LVL3 +$25 <b>$300</b>. Доход каждые 2 сек. Сейв — в браузере (как DataStore).</p>
+    <button id="btn">ИГРАТЬ</button>
+    <p style="font-size:12px;opacity:.7">Соперник-бот занимает вторую базу через 12 сек, если ты её не заберёшь.</p>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- state (mirrors CONFIG in TycoonServer.luau) ----------
+const CONFIG = { TycoonCount: 2, Spacing: 50, StartCash: 0, BaseIncome: 5, IncomeInterval: 2 };
+const ITEMS = [
+  { id:'walls', name:'🧱 Стены', cost:50,  desc:'стены базы' },
+  { id:'lvl2',  name:'🟢 Дроппер LVL2 +$10', cost:100, desc:'доход +$10' },
+  { id:'roof',  name:'🏠 Декор Крыша', cost:200, desc:'крыша' },
+  { id:'lvl3',  name:'🟠 Дроппер LVL3 +$25', cost:300, desc:'доход +$25 (нужен LVL2)' },
+];
+const SAVE_KEY = 'tycoonCashV1';
+let S = load() || { cash: CONFIG.StartCash, plot: -1, owned: [], muted:false };
+
+function load(){ try{ const r = localStorage.getItem(SAVE_KEY); return r ? JSON.parse(r) : null; }catch(e){ return null; } }
+function save(silent){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); if(!silent) toast('💾 Сохранено (Cash $'+S.cash+')'); }catch(e){} }
+
+// ---------- tiny UI helpers ----------
+const $ = id => document.getElementById(id);
+const cashTxt=$('cashTxt'), incTxt=$('incTxt'), lvlTxt=$('lvlTxt'), progTxt=$('progTxt'),
+      objective=$('objective'), promptEl=$('prompt'), toastBox=$('toast'), shopEl=$('shop');
+function toast(msg, ms=2600){ const d=document.createElement('div'); d.className='toast'; d.textContent=msg; toastBox.appendChild(d); setTimeout(()=>d.remove(), ms); }
+function sfx(type){
+  try{
+    sfx.ac = sfx.ac || new (window.AudioContext||window.webkitAudioContext)();
+    const AC=sfx.ac, t=AC.currentTime;
+    const seq = type==='cash' ? [523,659,784,1046] : type==='buy' ? [330,440,660] : [440,660];
+    seq.forEach((f,i)=>{ const o=AC.createOscillator(), g=AC.createGain(); o.connect(g); g.connect(AC.destination);
+      o.type = type==='cash' ? 'sine' : 'square'; o.frequency.value=f;
+      g.gain.setValueAtTime(.12,t+i*.07); g.gain.exponentialRampToValueAtTime(.001,t+i*.07+.15);
+      o.start(t+i*.07); o.stop(t+i*.07+.16); });
+  }catch(e){}
+}
+
+// ---------- three setup ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e14);
+scene.fog = new THREE.Fog(0x0b0e14, 70, 170);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, .1, 400);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+$('app').appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0x8fa3c7, .75));
+const sun = new THREE.DirectionalLight(0xfff2d0, 1.15);
+sun.position.set(30,55,25); sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left=-70; sun.shadow.camera.right=70; sun.shadow.camera.top=70; sun.shadow.camera.bottom=-70;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(220,140), new THREE.MeshStandardMaterial({color:0x182030, roughness:1}));
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+// дорога между базами
+const road = new THREE.Mesh(new THREE.PlaneGeometry(220,8), new THREE.MeshStandardMaterial({color:0x0e1219}));
+road.rotation.x=-Math.PI/2; road.position.set(25,.01,20); scene.add(road);
+
+function labelSprite(text, opts={}){
+  const c=document.createElement('canvas'); c.width=512; c.height=160;
+  const g=c.getContext('2d');
+  g.fillStyle=opts.bg||'rgba(12,16,26,.85)'; g.fillRect(0,0,512,160);
+  g.strokeStyle=opts.border||'#ffd75e'; g.lineWidth=8; g.strokeRect(4,4,504,152);
+  g.fillStyle=opts.fg||'#ffd75e'; g.font='bold 52px Arial'; g.textAlign='center'; g.textBaseline='middle';
+  const lines=text.split('\n');
+  lines.forEach((ln,i)=> g.fillText(ln, 256, 80 + (i-(lines.length-1)/2)*56));
+  const tex=new THREE.CanvasTexture(c);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true}));
+  sp.scale.set(7,2.2,1);
+  return sp;
+}
+function box(w,h,d,color,x,y,z,parent=scene){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color, roughness:.8}));
+  m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; parent.add(m); return m;
+}
+
+// ---------- plots (mirror createTycoon in Luau) ----------
+const plots=[];
+for(let i=0;i<CONFIG.TycoonCount;i++){
+  const cx = i*CONFIG.Spacing, cz = 0;
+  const grp = new THREE.Group(); scene.add(grp);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(36,1,36), new THREE.MeshStandardMaterial({color:0x2d3750}));
+  base.position.set(cx,.5,cz); base.receiveShadow=true; grp.add(base);
+  // разметка границ
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(36.4,.2,36.4), new THREE.MeshBasicMaterial({color:0x3b4a6b}));
+  edge.position.set(cx,1.02,cz); grp.add(edge);
+  // ClaimPad
+  const pad = box(8,1,8,0xffd75e, cx,1.5,cz-12, grp);
+  pad.material.emissive = new THREE.Color(0x664d00);
+  const padLbl = labelSprite('ВСТАНЬ\nЗанять базу'); padLbl.position.set(cx,5.5,cz-12); grp.add(padLbl);
+  // Spawn (декор)
+  const spawn = box(6,.4,6,0x1a6cff, cx,1.2,cz+12, grp);
+  // кнопки (зелёные, как в Luau: createButton offsets)
+  const btnDefs = [
+    { item:'walls', off:[8,0] }, { item:'lvl2', off:[8,8] },
+    { item:'lvl3',  off:[0,8] }, { item:'roof',  off:[-8,8] },
+  ];
+  const btns = btnDefs.map(b=>{
+    const it = ITEMS.find(x=>x.id===b.item);
+    const m = box(6,1,6,0x3cb450, cx+b.off[0],1.5,cz+b.off[1], grp);
+    m.material.emissive = new THREE.Color(0x063d12);
+    const lb = labelSprite(it.name+'\n$'+it.cost, {border:'#37e05b', fg:'#a6ff7a'});
+    lb.position.set(cx+b.off[0],4.6,cz+b.off[1]); grp.add(lb);
+    return { item:b.item, mesh:m, lbl:lb, x:cx+b.off[0], z:cz+b.off[1] };
+  });
+  const bought = new THREE.Group(); scene.add(bought);
+  // owner label
+  const ownerLbl = labelSprite('СВОБОДНО', {border:'#8fa3c7', fg:'#fff'});
+  ownerLbl.position.set(cx,8,cz); scene.add(ownerLbl);
+  plots.push({ cx, cz, pad, padLbl, spawn, btns, bought, ownerLbl, owner:null, factory:null, wallsG:null, tower:null, roofM:null });
+}
+
+function buildFactory(p){
+  if(p.factory) return;
+  p.factory = box(8,4,8,0x783c14, p.cx-8,3,p.cz, p.bought); // фабрика денег как в Luau
+  const lb = labelSprite('ФАБРИКА $', {border:'#ffb020', fg:'#ffe08a'});
+  lb.scale.set(5,1.6,1); lb.position.set(p.cx-8,6.5,p.cz); p.bought.add(lb);
+}
+function buildWalls(p){
+  if(p.wallsG) return;
+  p.wallsG = new THREE.Group(); p.bought.add(p.wallsG);
+  const c={x:p.cx,z:p.cz}, col=0x505a82;
+  box(36,6,1,col, c.x,4,c.z-18, p.wallsG); box(36,6,1,col, c.x,4,c.z+18, p.wallsG);
+  box(1,6,36,col, c.x-18,4,c.z, p.wallsG); box(1,6,36,col, c.x+18,4,c.z, p.wallsG);
+}
+function buildTower(p, lvl){
+  if(p.tower){ p.bought.remove(p.tower); }
+  p.tower = new THREE.Group(); p.bought.add(p.tower);
+  if(lvl>=2) box(4,6,4,0x37e05b, p.cx-8,6,p.cz, p.tower);
+  if(lvl>=3) box(4,9,4,0xffb020, p.cx-8,7.5,p.cz, p.tower);
+}
+function buildRoof(p){
+  if(p.roofM) return;
+  p.roofM = box(14,1,14,0x1e1e28, p.cx-8,9,p.cz, p.bought);
+}
+function refreshPlot(p, idx){
+  const owned = (idx===S.plot) ? S.owned : (p.owner==='rival' ? p.rivalOwned : []);
+  p.pad.visible = !p.owner; p.padLbl.visible = !p.owner;
+  p.btns.forEach(b=>{
+    const has = owned.includes(b.item);
+    const show = !!p.owner && !has;
+    b.mesh.visible = show; b.lbl.visible = show;
+  });
+  const nm = !p.owner ? 'СВОБОДНО' : (p.owner==='player' ? 'ТВОЯ БАЗА' : 'БАЗА RIVAL');
+  // перерисовать табличку владельца
+  scene.remove(p.ownerLbl);
+  p.ownerLbl = labelSprite(nm, p.owner==='player' ? {border:'#37e05b', fg:'#a6ff7a'} : p.owner ? {border:'#ff6b6b', fg:'#ff9a9a'} : {border:'#8fa3c7', fg:'#fff'});
+  p.ownerLbl.position.set(p.cx,8,p.cz); scene.add(p.ownerLbl);
+}
+function refreshAll(){ plots.forEach(refreshPlot); renderShop(); updateHUD(); }
+
+// ---------- player (roblox-style blocky avatar) ----------
+function makeAvatar(shirt, pants){
+  const g=new THREE.Group();
+  const torso=new THREE.Mesh(new THREE.BoxGeometry(.9,1,.5), new THREE.MeshStandardMaterial({color:shirt}));
+  torso.position.y=1.15; torso.castShadow=true; g.add(torso);
+  const head=new THREE.Mesh(new THREE.BoxGeometry(.55,.55,.55), new THREE.MeshStandardMaterial({color:0xf2c48d}));
+  head.position.y=2.05; head.castShadow=true; g.add(head);
+  const mkLeg=x=>{ const l=new THREE.Mesh(new THREE.BoxGeometry(.32,.85,.35), new THREE.MeshStandardMaterial({color:pants})); l.position.set(x,.45,0); l.castShadow=true; g.add(l); return l; };
+  const mkArm=x=>{ const a=new THREE.Mesh(new THREE.BoxGeometry(.28,.9,.3), new THREE.MeshStandardMaterial({color:shirt})); a.position.set(x,1.2,0); a.castShadow=true; g.add(a); return a; };
+  g.userData={lLeg:mkLeg(-.22), rLeg:mkLeg(.22), lArm:mkArm(-.62), rArm:mkArm(.62)};
+  return g;
+}
+const player = makeAvatar(0x1a6cff, 0x222a36);
+player.position.set(0,1,-2); scene.add(player);
+const rival = makeAvatar(0xd33a2c, 0x111111);
+rival.position.set(CONFIG.Spacing,1,6); scene.add(rival);
+plots[1].owner=null; plots[1].rivalOwned=[];
+
+// восстановить сейв
+if(S.plot>=0 && S.plot<plots.length){
+  plots[S.plot].owner='player';
+  if(S.owned.includes('walls')) buildWalls(plots[S.plot]);
+  buildFactory(plots[S.plot]);
+  if(S.owned.includes('lvl2')||S.owned.includes('lvl3')) buildTower(plots[S.plot], S.owned.includes('lvl3')?3:2);
+  if(S.owned.includes('roof')) buildRoof(plots[S.plot]);
+}
+
+// ---------- controls: third-person follow ----------
+let yaw=Math.PI, pitch=.42, keys={}, joy={x:0,y:0};
+addEventListener('keydown', e=>{ keys[e.code]=true;
+  if(e.code==='KeyE') doInteract();
+  if(['ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e=>{ keys[e.code]=false; });
+let dragging=false, lx=0, ly=0;
+addEventListener('mousedown', e=>{
+  if(e.target.closest('#overlay,#topBtns,#shop,#back')) return;
+  if(e.button===2 || !document.pointerLockElement){ dragging=true; lx=e.clientX; ly=e.clientY; }
+});
+addEventListener('mouseup', ()=> dragging=false);
+addEventListener('mousemove', e=>{
+  if(document.pointerLockElement){ yaw -= e.movementX*.003; pitch += e.movementY*.002; }
+  else if(dragging){ yaw -= (e.clientX-lx)*.005; pitch += (e.clientY-ly)*.004; lx=e.clientX; ly=e.clientY; }
+  pitch = Math.max(.08, Math.min(1.2, pitch));
+});
+addEventListener('contextmenu', e=>e.preventDefault());
+renderer.domElement.addEventListener('click', ()=>{
+  if(started && !document.pointerLockElement){ try{ const p=renderer.domElement.requestPointerLock?.(); if(p&&p.catch)p.catch(()=>{});}catch(e){} }
+});
+// joystick
+const joyEl=$('joy'), stick=$('stick');
+let joyId=null;
+joyEl.addEventListener('touchstart', e=>{ joyId=e.changedTouches[0].identifier; e.preventDefault(); },{passive:false});
+addEventListener('touchmove', e=>{
+  for(const t of e.changedTouches){ if(t.identifier===joyId){
+    const r=joyEl.getBoundingClientRect();
+    let dx=(t.clientX-(r.left+55))/45, dy=(t.clientY-(r.top+55))/45;
+    const l=Math.hypot(dx,dy)||1; if(l>1){dx/=l;dy/=l;}
+    joy={x:dx,y:dy}; stick.style.left=(35+dx*32)+'px'; stick.style.top=(35+dy*32)+'px';
+  }}
+},{passive:true});
+addEventListener('touchend', e=>{ for(const t of e.changedTouches){ if(t.identifier===joyId){ joyId=null; joy={x:0,y:0}; stick.style.left='35px'; stick.style.top='35px'; } } });
+$('actBtn').onclick=e=>{ e.stopPropagation(); doInteract(); };
+$('saveBtn').onclick=e=>{ e.stopPropagation(); save(); };
+$('resetBtn').onclick=e=>{ e.stopPropagation(); if(confirm('Сбросить прогресс и Cash?')){ S={cash:0,plot:-1,owned:[]}; save(true); location.reload(); } };
+
+// ---------- game logic (mirrors Luau: claim, buy, income) ----------
+function income(){ return CONFIG.BaseIncome + (S.owned.includes('lvl2')?10:0) + (S.owned.includes('lvl3')?25:0); }
+function updateHUD(){
+  cashTxt.textContent='$'+S.cash.toLocaleString();
+  incTxt.textContent='+$'+income();
+  lvlTxt.textContent='LVL '+(S.owned.includes('lvl3')?3:S.owned.includes('lvl2')?2:1);
+  progTxt.textContent=S.owned.length+'/4';
+}
+function renderShop(){
+  shopEl.innerHTML='';
+  ITEMS.forEach(it=>{
+    const d=document.createElement('div');
+    const has=S.owned.includes(it.id);
+    d.className='shop-item'+(has?' owned':'')+((!has&&S.cash>=it.cost&&S.plot>=0)?' afford':'');
+    d.innerHTML=`<b>${it.name}</b> — <span class="price">${has?'КУПЛЕНО':'$'+it.cost}</span><br><span style="color:#9fb0c8">${it.desc}</span>`;
+    shopEl.appendChild(d);
+  });
+}
+function nearestInteract(){
+  const p=player.position;
+  for(let i=0;i<plots.length;i++){
+    const pl=plots[i];
+    if(!pl.owner && Math.hypot(p.x-pl.cx, p.z-(pl.cz-12))<6) return {type:'claim', plot:i};
+    if(pl.owner==='player' && i===S.plot){
+      for(const b of pl.btns){
+        if(b.mesh.visible && Math.hypot(p.x-b.x, p.z-b.z)<4.5) return {type:'buy', plot:i, item:b.item};
+      }
+    }
+  }
+  return null;
+}
+function doInteract(){
+  if(!started) return;
+  const it=nearestInteract();
+  if(!it){ toast('Подойди к жёлтой / зелёной плите'); return; }
+  if(it.type==='claim'){
+    const pl=plots[it.plot];
+    if(pl.owner){ toast('База уже занята'); return; }
+    pl.owner='player'; S.plot=it.plot; S.owned=[];
+    buildFactory(pl); refreshAll(); save(true); sfx('buy');
+    toast('🎉 База твоя! Доход +$'+income()+' каждые 2 сек');
+    objective.innerHTML='Покупай апгрейды: подходи к зелёным плитам + <b>[E]</b>.';
+    return;
+  }
+  if(it.type==='buy'){
+    const def=ITEMS.find(x=>x.id===it.item);
+    if(S.owned.includes(def.id)) return;
+    if(def.id==='lvl3' && !S.owned.includes('lvl2')){ toast('Сначала купи Дроппер LVL2!'); return; }
+    if(S.cash<def.cost){ toast(`Нужно $${def.cost}, у тебя $${S.cash}`); return; }
+    S.cash-=def.cost; S.owned.push(def.id);
+    const pl=plots[it.plot];
+    if(def.id==='walls') buildWalls(pl);
+    if(def.id==='lvl2') buildTower(pl,2);
+    if(def.id==='lvl3') buildTower(pl,3);
+    if(def.id==='roof') buildRoof(pl);
+    // cash-частицы
+    burst(new THREE.Vector3(player.position.x,2,player.position.z), 0x37e05b);
+    refreshAll(); save(true); sfx('cash');
+    toast(`✅ ${def.name} куплено! Доход +$${income()}/2с`);
+    if(S.owned.length>=4){ toast('🏆 ВСЁ КУПЛЕНО! Ты магнат!', 4000); objective.innerHTML='<b>Всё куплено!</b> Фарми Cash или сбрось прогресс 🗑.'; }
+    return;
+  }
+}
+// rival bot (чтобы вторая база жила)
+let rivalT=0, rivalStep=0;
+function rivalTick(dt){
+  rivalT+=dt;
+  // ходит кругами по своей базе для живости
+  const rp=plots[1];
+  const t=performance.now()/1000;
+  rival.position.x = rp.cx + Math.sin(t*.5)*8;
+  rival.position.z = rp.cz + Math.cos(t*.35)*8;
+  rival.rotation.y = t*.5;
+  if(rivalT>12 && !rp.owner && S.plot!==1){
+    rp.owner='rival'; rp.rivalOwned=[]; buildFactory(rp); refreshAll();
+    toast('🤖 Rival занял вторую базу!');
+    rivalT=0; rivalStep=0;
+  } else if(rp.owner==='rival'){
+    if(rivalT>18 && rivalStep<3){
+      rivalT=0; rivalStep++;
+      const order=['walls','lvl2','roof'];
+      const id=order[rivalStep-1];
+      rp.rivalOwned.push(id);
+      if(id==='walls') buildWalls(rp);
+      if(id==='lvl2') buildTower(rp,2);
+      if(id==='roof') buildRoof(rp);
+      refreshAll();
+      toast(`🤖 Rival купил ${id}`);
+    }
+  }
+}
+// cash particles
+const parts=[];
+function burst(pos,color){
+  for(let i=0;i<14;i++){
+    const m=new THREE.Mesh(new THREE.BoxGeometry(.3,.3,.3), new THREE.MeshBasicMaterial({color}));
+    m.position.copy(pos);
+    m.userData.v=new THREE.Vector3((Math.random()-.5)*6, 4+Math.random()*4, (Math.random()-.5)*6);
+    m.userData.life=1;
+    scene.add(m); parts.push(m);
+  }
+}
+function dropTick(dt){
+  // падающие монеты из фабрики игрока
+  if(S.plot>=0 && Math.random()<dt*2){
+    const p=plots[S.plot];
+    const m=new THREE.Mesh(new THREE.CylinderGeometry(.35,.35,.1,12), new THREE.MeshStandardMaterial({color:0xffd75e, metalness:.6, roughness:.3}));
+    m.position.set(p.cx-8+(Math.random()-.5)*4, 6, p.cz+(Math.random()-.5)*4);
+    m.userData.v=new THREE.Vector3(0,-3,0); m.userData.life=2; m.userData.coin=true;
+    scene.add(m); parts.push(m);
+  }
+  for(let i=parts.length-1;i>=0;i--){
+    const m=parts[i];
+    m.userData.life-=dt;
+    m.position.addScaledVector(m.userData.v, dt);
+    if(m.userData.coin!==true) m.userData.v.y-=9*dt;
+    m.rotation.x+=dt*4; m.rotation.y+=dt*3;
+    if(m.userData.life<=0 || m.position.y<1.1){ scene.remove(m); parts.splice(i,1); }
+  }
+}
+
+// ---------- start / loop ----------
+let started=false;
+refreshAll();
+$('btn').onclick=()=>{
+  $('overlay').style.display='none';
+  $('hud').style.display='flex'; $('shop').style.display='flex';
+  $('topBtns').style.display='flex'; $('lockHint').style.display='block';
+  started=true;
+  toast(S.plot>=0 ? 'С возвращением! Cash $'+S.cash : 'Встань на ЖЁЛТЫЙ ClaimPad + [E]');
+  if(S.plot<0) objective.innerHTML='Встань на жёлтый <b>ClaimPad</b> и нажми <b>[E]</b>.';
+  else objective.innerHTML='Покупай апгрейды: подходи к зелёным плитам + <b>[E]</b>.';
+};
+setInterval(()=>{ // income как в Luau: каждые IncomeInterval сек
+  if(!started) return;
+  if(S.plot>=0){ S.cash+=income(); updateHUD(); renderShop(); }
+}, CONFIG.IncomeInterval*1000);
+setInterval(()=>{ if(started) save(true); }, 15000); // автосейв
+
+const clock=new THREE.Clock();
+function collide(x,z){
+  for(let i=0;i<plots.length;i++){
+    const p=plots[i], hasW=(i===S.plot)?S.owned.includes('walls'):(p.owner==='rival'&&p.rivalOwned.includes('walls'));
+    if(!hasW) continue;
+    // 4 стены толщиной 1
+    if(Math.abs(z-(p.cz-18))<.8 && Math.abs(x-p.cx)<18.5) return true;
+    if(Math.abs(z-(p.cz+18))<.8 && Math.abs(x-p.cx)<18.5) return true;
+    if(Math.abs(x-(p.cx-18))<.8 && Math.abs(z-p.cz)<18.5) return true;
+    if(Math.abs(x-(p.cx+18))<.8 && Math.abs(z-p.cz)<18.5) return true;
+  }
+  if(Math.abs(x-25)>100||Math.abs(z)>60) return true;
+  return false;
+}
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(.05, clock.getDelta());
+  if(started){
+    // камера
+    if(keys['ArrowLeft']) yaw+=2.2*dt;
+    if(keys['ArrowRight']) yaw-=2.2*dt;
+    if(keys['ArrowUp']) pitch=Math.min(1.2,pitch+1.6*dt);
+    if(keys['ArrowDown']) pitch=Math.max(.08,pitch-1.6*dt);
+    // движение относительно камеры
+    const sp=((keys['ShiftLeft']||keys['ShiftRight'])?11:6.5);
+    let fw=((keys['KeyW']?1:0)-(keys['KeyS']?1:0)) + (-joy.y);
+    let st=((keys['KeyD']?1:0)-(keys['KeyA']?1:0)) + (joy.x);
+    fw=Math.max(-1,Math.min(1,fw)); st=Math.max(-1,Math.min(1,st));
+    if(fw||st){
+      const l=Math.hypot(fw,st), f=fw/l, s=st/l;
+      const fx=-Math.sin(yaw), fz=-Math.cos(yaw);
+      const rx=Math.cos(yaw), rz=-Math.sin(yaw);
+      const dx=(fx*f+rx*s)*sp*dt, dz=(fz*f+rz*s)*sp*dt;
+      const nx=player.position.x+dx, nz=player.position.z+dz;
+      if(!collide(nx,player.position.z)) player.position.x=nx;
+      if(!collide(player.position.x,nz)) player.position.z=nz;
+      player.rotation.y=Math.atan2(dx,dz);
+      const t=performance.now()/500;
+      player.userData.lLeg.rotation.x=Math.sin(t)*.7; player.userData.rLeg.rotation.x=-Math.sin(t)*.7;
+      player.userData.lArm.rotation.x=-Math.sin(t)*.7; player.userData.rArm.rotation.x=Math.sin(t)*.7;
+    } else {
+      player.userData.lLeg.rotation.x*=.9; player.userData.rLeg.rotation.x*=.9;
+      player.userData.lArm.rotation.x*=.9; player.userData.rArm.rotation.x*=.9;
+    }
+    const cd=10, ch=4.5+ pitch*7;
+    camera.position.set(player.position.x+Math.sin(yaw)*cd*Math.cos(pitch), ch, player.position.z+Math.cos(yaw)*cd*Math.cos(pitch));
+    camera.lookAt(player.position.x, 2, player.position.z);
+    rivalTick(dt); dropTick(dt);
+    // промпт
+    const it=nearestInteract();
+    if(it){
+      promptEl.style.display='block';
+      promptEl.textContent = it.type==='claim' ? '[E] Занять базу' : `[E] Купить ${ITEMS.find(x=>x.id===it.item).name} $${ITEMS.find(x=>x.id===it.item).cost}`;
+    } else promptEl.style.display='none';
+    // пульс падов
+    const t=performance.now()/300;
+    plots.forEach(p=>{ if(p.pad.visible) p.pad.position.y=1.5+Math.sin(t)*.12; });
+    updateHUD();
+  } else {
+    const t=performance.now()/2000;
+    camera.position.set(25+Math.sin(t)*45, 30, 35+Math.cos(t)*20);
+    camera.lookAt(25,0,0);
+  }
+  renderer.render(scene,camera);
+}
+addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+updateHUD();
+animate();
+</script>
+</body>
+</html>
