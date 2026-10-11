@@ -1,9 +1,7 @@
-# PAYDAY: Block Heist — Three.js
+# Побег от Блогера 🤳🏃‍♂️
 
-Mini Payday-style top-down heist built with Three.js, no build step.
+Браузерная мини-игра: убегай от блогера с камерой, собирай лайки ❤️, энергетики ☕ и маскировку 🕶. Каждая минута — новый фанат в погоне.
 
-Play: drill vault → grab bags → secure in van → escape.
+Играть: WASD / стрелки + Shift (рывок), на телефоне — джойстик.
 
-Controls: WASD move, mouse aim, click shoot, R reload, Shift sprint, E grab/drop, F drill/secure/escape.
-
-Hosted via GitHub Pages from `main` / root.
+Хостинг: GitHub Pages, ветка `main`, корень.
