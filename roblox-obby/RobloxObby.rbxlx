@@ -1,0 +1,1244 @@
+<?xml version="1.0" encoding="utf-8"?>
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Item class="Workspace" referent="RBXWORKSPACE">
+		<Properties>
+			<string name="Name">Workspace</string>
+			<bool name="StreamingEnabled">false</bool>
+		</Properties>
+	</Item>
+	<Item class="Lighting" referent="RBXLIGHTING">
+		<Properties>
+			<string name="Name">Lighting</string>
+		</Properties>
+	</Item>
+	<Item class="ServerScriptService" referent="RBXSERVICESCRIPTSERVICE">
+		<Properties>
+			<string name="Name">ServerScriptService</string>
+		</Properties>
+		<Item class="Script" referent="RBXOBBYSERVER">
+			<Properties>
+				<string name="Name">ObbyServer</string>
+				<bool name="Disabled">false</bool>
+				<ProtectedString name="Source">--!nonstrict
+-- Obby Kit v1 | ServerScriptService &gt; Script (обычный Script, не LocalScript)
+-- Что делает: строит полосу препятствий из 11 стейджей + финиш (прыжки, лава, узкие
+-- балки, движущиеся платформы, вращающаяся штанга, исчезающие плитки, подъём,
+-- конвейер, лифты, ступеньки), ставит 11 чекпоинтов, считает стейдж/время/смерти,
+-- ведёт leaderstats, сохраняет лучший стейдж и время через DataStore.
+-- Установка: ServerScriptService &gt; Script &gt; вставить код целиком &gt; Play.
+-- HUD: StarterPlayer &gt; StarterPlayerScripts &gt; LocalScript (файл ObbyHud.luau).
+-- Публикация: File &gt; Publish to Roblox &gt; название &gt; Publish. Ссылка: roblox.com/games/&lt;ID&gt;
+
+local Players = game:GetService(&quot;Players&quot;)
+local ReplicatedStorage = game:GetService(&quot;ReplicatedStorage&quot;)
+local Lighting = game:GetService(&quot;Lighting&quot;)
+local RunService = game:GetService(&quot;RunService&quot;)
+local DataStoreService = game:GetService(&quot;DataStoreService&quot;)
+
+local CONFIG = {
+	StageCount = 11, -- всего стейджей (чекпоинтов столько же + старт)
+	FallKillY = -40, -- ниже этой высоты игрок погибает (улетел в пустоту)
+	RespawnTime = 2.5, -- секунд до респавна
+	WalkSpeed = 20,
+	JumpPower = 52,
+
+	SkipEnabled = true, -- жёлтые кнопки SKIP на чекпоинтах (пропустить стейдж)
+	SkipCooldown = 3, -- секунд между скипами
+
+	MoverSpeed = 1.7, -- скорость платформ, катающихся влево-вправо
+	ElevatorSpeed = 1.1, -- скорость лифтов
+	SpinnerSpeed = 1.15, -- скорость вращающейся штанги (рад/сек)
+	BlinkOn = 1.7, -- исчезающие плитки: сколько секунд плитка твёрдая
+	BlinkOff = 1.2, -- и сколько секунд исчезнувшая
+	BlinkStagger = 0.65, -- сдвиг фаз у соседних плиток
+
+	ConveyorSpeed = 12, -- насколько сильно конвейер толкает назад
+
+	SaveData = true, -- DataStore (лучший стейдж, время, победы)
+	SaveInterval = 10, -- сейв не чаще, чем раз в N секунд на игрока
+}
+
+local PALETTE = {
+	Color3.fromRGB(86, 178, 255), -- стейдж 1
+	Color3.fromRGB(255, 138, 76), -- 2
+	Color3.fromRGB(178, 122, 255), -- 3
+	Color3.fromRGB(76, 220, 152), -- 4
+	Color3.fromRGB(255, 104, 150), -- 5
+	Color3.fromRGB(88, 214, 255), -- 6
+	Color3.fromRGB(255, 196, 84), -- 7
+	Color3.fromRGB(140, 150, 255), -- 8
+	Color3.fromRGB(120, 230, 190), -- 9
+	Color3.fromRGB(255, 122, 122), -- 10
+	Color3.fromRGB(200, 220, 100), -- 11
+}
+
+local LAVA_COLOR = Color3.fromRGB(255, 62, 40)
+local CHECKPOINT_COLOR = Color3.fromRGB(60, 220, 110)
+local SKIP_COLOR = Color3.fromRGB(255, 214, 64)
+local FINISH_COLOR = Color3.fromRGB(255, 196, 40)
+
+-- ============================================================
+--  ХЕЛПЕРЫ
+-- ============================================================
+
+local function makePart(props)
+	local p = Instance.new(&quot;Part&quot;)
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	for k, v in pairs(props) do
+		p[k] = v
+	end
+	return p
+end
+
+-- чистим старую карту (baseplate, дефолтный спавн и т.п.), оставляя камеру и terrain
+for _, child in ipairs(workspace:GetChildren()) do
+	if not child:IsA(&quot;Camera&quot;) and not child:IsA(&quot;Terrain&quot;) then
+		child:Destroy()
+	end
+end
+
+-- ============================================================
+--  REMOTES
+-- ============================================================
+
+local remotes = ReplicatedStorage:FindFirstChild(&quot;ObbyRemotes&quot;)
+if not remotes then
+	remotes = Instance.new(&quot;Folder&quot;)
+	remotes.Name = &quot;ObbyRemotes&quot;
+	remotes.Parent = ReplicatedStorage
+end
+
+local function ensureRemote(name, className)
+	local r = remotes:FindFirstChild(name)
+	if not r then
+		r = Instance.new(className)
+		r.Name = name
+		r.Parent = remotes
+	end
+	return r
+end
+
+local announcer = ensureRemote(&quot;Announce&quot;, &quot;RemoteEvent&quot;) -- сервер -&gt; клиент: баннеры и таймер
+local actionRemote = ensureRemote(&quot;Action&quot;, &quot;RemoteEvent&quot;) -- клиент -&gt; сервер: Reset / Restart
+
+-- ============================================================
+--  СВЕТ И АТМОСФЕРА
+-- ============================================================
+
+for _, e in ipairs(Lighting:GetChildren()) do
+	if e:IsA(&quot;Atmosphere&quot;) or e:IsA(&quot;BloomEffect&quot;) or e:IsA(&quot;ColorCorrectionEffect&quot;) or e:IsA(&quot;SunRaysEffect&quot;) then
+		e:Destroy()
+	end
+end
+
+Lighting.ClockTime = 14.5
+Lighting.Brightness = 2.4
+Lighting.Ambient = Color3.fromRGB(110, 120, 142)
+Lighting.OutdoorAmbient = Color3.fromRGB(130, 142, 166)
+Lighting.EnvironmentDiffuseScale = 0.4
+Lighting.EnvironmentSpecularScale = 0.6
+Lighting.ExposureCompensation = 0.05
+Lighting.GlobalShadows = true
+
+local atmosphere = Instance.new(&quot;Atmosphere&quot;)
+atmosphere.Density = 0.3
+atmosphere.Haze = 1.4
+atmosphere.Glare = 0.12
+atmosphere.Color = Color3.fromRGB(210, 224, 240)
+atmosphere.Decay = Color3.fromRGB(104, 120, 148)
+atmosphere.Parent = Lighting
+
+local bloom = Instance.new(&quot;BloomEffect&quot;)
+bloom.Intensity = 0.5
+bloom.Size = 20
+bloom.Threshold = 1.15
+bloom.Parent = Lighting
+
+local colorCorrection = Instance.new(&quot;ColorCorrectionEffect&quot;)
+colorCorrection.Contrast = 0.06
+colorCorrection.Saturation = 0.1
+colorCorrection.Parent = Lighting
+
+local sunRays = Instance.new(&quot;SunRaysEffect&quot;)
+sunRays.Intensity = 0.08
+sunRays.Spread = 0.8
+sunRays.Parent = Lighting
+
+-- ============================================================
+--  МАТЕРИАЛЫ ПОСТРОЙКИ
+-- ============================================================
+
+local obbyFolder = Instance.new(&quot;Folder&quot;)
+obbyFolder.Name = &quot;Obby&quot;
+obbyFolder.Parent = workspace
+
+local updaters = {} -- { fn(t) } — движущиеся платформы, штанга, исчезающие плитки
+local killParts = {} -- части, убивающие при касании (лава, штанга)
+local checkpoints = {} -- SpawnLocation&apos;ы чекпоинтов, индекс = стейдж
+local finishPad = nil
+
+-- добавить платформу: size, позиция (Vector3), цвет, материал; offset — локальный от base
+local function addPart(folder, base, name, size, off, color, material, extra)
+	local props = {
+		Name = name,
+		Size = size,
+		CFrame = base * CFrame.new(off),
+		Color = color,
+		Material = material or Enum.Material.SmoothPlastic,
+		Parent = folder,
+	}
+	if extra then
+		for k, v in pairs(extra) do
+			props[k] = v
+		end
+	end
+	return makePart(props)
+end
+
+local function addLava(folder, base, size, off)
+	local lava = addPart(folder, base, &quot;Lava&quot;, size, off, LAVA_COLOR, Enum.Material.Neon, {
+		CanCollide = true,
+	})
+	table.insert(killParts, lava)
+	return lava
+end
+
+local function addCheckpoint(index, position)
+	local pad = Instance.new(&quot;SpawnLocation&quot;)
+	pad.Name = &quot;Checkpoint&quot; .. tostring(index)
+	pad.Size = Vector3.new(8, 1, 8)
+	pad.CFrame = CFrame.new(position)
+	pad.Anchored = true
+	pad.CanCollide = true
+	pad.Color = CHECKPOINT_COLOR
+	pad.Material = Enum.Material.Neon
+	pad.TopSurface = Enum.SurfaceType.Smooth
+	pad.BottomSurface = Enum.SurfaceType.Smooth
+	pad.Neutral = false
+	pad.AllowTeamChangeOnTouch = false
+	pad.Duration = 0
+	pad.Parent = obbyFolder
+	pad:SetAttribute(&quot;Checkpoint&quot;, index)
+
+	-- номер чекпоинта над площадкой
+	local label = Instance.new(&quot;BillboardGui&quot;)
+	label.Size = UDim2.fromOffset(120, 60)
+	label.MaxDistance = 260
+	label.AlwaysOnTop = false
+	label.Adornee = pad
+	label.Parent = pad
+
+	local text = Instance.new(&quot;TextLabel&quot;)
+	text.BackgroundTransparency = 1
+	text.Size = UDim2.fromScale(1, 1)
+	text.Font = Enum.Font.GothamBlack
+	text.Text = tostring(index)
+	text.TextColor3 = if index &gt; 0 then CHECKPOINT_COLOR else Color3.fromRGB(255, 255, 255)
+	text.TextScaled = true
+	text.TextStrokeTransparency = 0.4
+	text.Parent = label
+
+	checkpoints[index] = pad
+
+	-- жёлтая кнопка SKIP рядом с чекпоинтом
+	if CONFIG.SkipEnabled and index &lt; CONFIG.StageCount + 1 then
+		local skip = addPart(obbyFolder, CFrame.new(position), &quot;Skip&quot; .. tostring(index), Vector3.new(4, 1, 4), Vector3.new(6, 0, 0), SKIP_COLOR, Enum.Material.Neon, {})
+		skip:SetAttribute(&quot;SkipIndex&quot;, index)
+
+		local skipLabel = Instance.new(&quot;BillboardGui&quot;)
+		skipLabel.Size = UDim2.fromOffset(90, 36)
+		skipLabel.MaxDistance = 140
+		skipLabel.Adornee = skip
+		skipLabel.Parent = skip
+
+		local skipText = Instance.new(&quot;TextLabel&quot;)
+		skipText.BackgroundTransparency = 1
+		skipText.Size = UDim2.fromScale(1, 1)
+		skipText.Font = Enum.Font.GothamBold
+		skipText.Text = &quot;SKIP&quot;
+		skipText.TextColor3 = Color3.fromRGB(60, 50, 10)
+		skipText.TextScaled = true
+		skipText.Parent = skipLabel
+	end
+
+	return pad
+end
+
+-- ============================================================
+--  СТРОЙКА ТРАССЫ (те же размеры, что в obby.html)
+-- ============================================================
+
+local START = Vector3.new(0, 0, 0)
+
+local STAGES = {
+	{
+		Name = &quot;Прыжки&quot;,
+		Build = function(f, base)
+			for _, xz in ipairs({ { 0, 10 }, { 5, 26 }, { -5, 42 } }) do
+				addPart(f, base, &quot;Pad&quot;, Vector3.new(10, 1, 10), Vector3.new(xz[1], 0, xz[2]), PALETTE[1], Enum.Material.SmoothPlastic, {})
+			end
+			return Vector3.new(0, 0, 54)
+		end,
+	},
+	{
+		Name = &quot;Лава&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(16, 1, 60), Vector3.new(0, -1, 28))
+			for _, xz in ipairs({ { 0, 8 }, { 6, 22 }, { -6, 36 } }) do
+				addPart(f, base, &quot;Pad&quot;, Vector3.new(10, 1, 10), Vector3.new(xz[1], 0, xz[2]), PALETTE[2], Enum.Material.SmoothPlastic, {})
+			end
+			return Vector3.new(0, 0, 52)
+		end,
+	},
+	{
+		Name = &quot;Узкие балки&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(18, 1, 56), Vector3.new(0, -1, 26))
+			addPart(f, base, &quot;Beam&quot;, Vector3.new(2, 1, 14), Vector3.new(0, 0, 11), PALETTE[3], Enum.Material.Metal, {})
+			addPart(f, base, &quot;Beam&quot;, Vector3.new(2, 1, 16), Vector3.new(5, 0, 28), PALETTE[3], Enum.Material.Metal, {})
+			return Vector3.new(0, 0, 47)
+		end,
+	},
+	{
+		Name = &quot;Движущиеся платформы&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(18, 1, 60), Vector3.new(0, -1, 28))
+			local zs = { 16, 30, 44 }
+			for i, z in ipairs(zs) do
+				local part = addPart(f, base, &quot;Mover&quot;, Vector3.new(8, 1, 8), Vector3.new(0, 0, z), PALETTE[4], Enum.Material.SmoothPlastic, {})
+				local basePos = part.Position
+				local phase = (i - 1) * (math.pi / 2)
+				table.insert(updaters, function(t)
+					part.CFrame = CFrame.new(basePos + Vector3.new(math.sin(t * CONFIG.MoverSpeed + phase) * 7, 0, 0))
+				end)
+			end
+			return Vector3.new(0, 0, 56)
+		end,
+	},
+	{
+		Name = &quot;Вертушка&quot;,
+		Build = function(f, base)
+			addPart(f, base, &quot;Pad&quot;, Vector3.new(8, 1, 8), Vector3.new(0, 0, 6), PALETTE[5], Enum.Material.SmoothPlastic, {})
+			-- PartType.Cylinder: ось по X, поэтому поворот на 90° вокруг Z, чтобы лёг диском
+			addPart(f, base, &quot;Circle&quot;, Vector3.new(1, 24, 24), Vector3.new(0, 0, 26), PALETTE[5], Enum.Material.Concrete, {
+				Shape = Enum.PartType.Cylinder,
+				CFrame = base * CFrame.new(0, 0, 26) * CFrame.Angles(0, 0, math.rad(90)),
+			})
+			addPart(f, base, &quot;Pad&quot;, Vector3.new(8, 1, 8), Vector3.new(0, 0, 46), PALETTE[5], Enum.Material.SmoothPlastic, {})
+
+			-- вращающаяся штанга-убийца
+			local bar = addPart(f, base, &quot;Lava&quot;, Vector3.new(24, 1, 2), Vector3.new(0, 1.5, 26), LAVA_COLOR, Enum.Material.Neon, {})
+			table.insert(killParts, bar)
+			local barBase = CFrame.new(bar.Position)
+			table.insert(updaters, function(t)
+				bar.CFrame = barBase * CFrame.Angles(0, t * CONFIG.SpinnerSpeed, 0)
+			end)
+			return Vector3.new(0, 0, 56)
+		end,
+	},
+	{
+		Name = &quot;Исчезающие плитки&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(16, 1, 56), Vector3.new(0, -1, 26))
+			local spots = { { -5, 10 }, { 5, 22 }, { -5, 34 }, { 5, 46 } }
+			local period = CONFIG.BlinkOn + CONFIG.BlinkOff
+			for i, xz in ipairs(spots) do
+				local tile = addPart(f, base, &quot;Blink&quot;, Vector3.new(8, 1, 8), Vector3.new(xz[1], 0, xz[2]), PALETTE[6], Enum.Material.Neon, {})
+				local phase = (i - 1) * CONFIG.BlinkStagger
+				local visible = true
+				table.insert(updaters, function(t)
+					local vis = ((t + phase) % period) &lt; CONFIG.BlinkOn
+					if vis ~= visible then
+						visible = vis
+						tile.CanCollide = vis
+						tile.Transparency = if vis then 0 else 0.85
+					end
+				end)
+			end
+			return Vector3.new(0, 0, 58)
+		end,
+	},
+	{
+		Name = &quot;Подъём&quot;,
+		Build = function(f, base)
+			local spots = { { 0, 2, 8 }, { 6, 4, 16 }, { -6, 6, 24 }, { 0, 8, 32 } }
+			for _, s in ipairs(spots) do
+				addPart(f, base, &quot;Pad&quot;, Vector3.new(8, 1, 8), Vector3.new(s[1], s[2], s[3]), PALETTE[7], Enum.Material.SmoothPlastic, {})
+			end
+			return Vector3.new(0, 10, 42)
+		end,
+	},
+	{
+		Name = &quot;Конвейер&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(16, 1, 40), Vector3.new(0, -3, 20))
+			local belt = addPart(f, base, &quot;Conveyor&quot;, Vector3.new(14, 1, 26), Vector3.new(0, 0, 20), PALETTE[8], Enum.Material.Metal, {})
+			belt:SetAttribute(&quot;PushZ&quot;, -CONFIG.ConveyorSpeed)
+
+			-- неоновые бортики, чтобы видеть край
+			addPart(f, base, &quot;Rail&quot;, Vector3.new(1, 0.4, 26), Vector3.new(-7.5, 0.2, 20), PALETTE[8], Enum.Material.Neon, { CanCollide = false })
+			addPart(f, base, &quot;Rail&quot;, Vector3.new(1, 0.4, 26), Vector3.new(7.5, 0.2, 20), PALETTE[8], Enum.Material.Neon, { CanCollide = false })
+			return Vector3.new(0, 0, 44)
+		end,
+	},
+	{
+		Name = &quot;Мост&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(16, 1, 52), Vector3.new(0, -3, 26))
+			local spots = { { 0, 8 }, { -5, 18 }, { 5, 28 }, { 0, 38 } }
+			for _, xz in ipairs(spots) do
+				addPart(f, base, &quot;Pad&quot;, Vector3.new(6, 1, 6), Vector3.new(xz[1], 0, xz[2]), PALETTE[9], Enum.Material.SmoothPlastic, {})
+			end
+			return Vector3.new(0, 0, 52)
+		end,
+	},
+	{
+		Name = &quot;Лифты&quot;,
+		Build = function(f, base)
+			addLava(f, base, Vector3.new(18, 1, 58), Vector3.new(0, -3, 28))
+			local zs = { 14, 28, 42 }
+			for i, z in ipairs(zs) do
+				local part = addPart(f, base, &quot;Elevator&quot;, Vector3.new(8, 1, 8), Vector3.new(0, 4, z), PALETTE[10], Enum.Material.SmoothPlastic, {})
+				local basePos = part.Position
+				local phase = (i - 1) * 2.1
+				table.insert(updaters, function(t)
+					part.CFrame = CFrame.new(basePos + Vector3.new(0, math.sin(t * CONFIG.ElevatorSpeed + phase) * 4, 0))
+				end)
+			end
+			return Vector3.new(0, 8, 56)
+		end,
+	},
+	{
+		Name = &quot;Лестница&quot;,
+		Build = function(f, base)
+			local spots = { { 0, 0, 10 }, { -4, 2, 18 }, { 4, 4, 26 }, { -4, 6, 34 }, { 0, 8, 42 } }
+			for _, s in ipairs(spots) do
+				addPart(f, base, &quot;Pad&quot;, Vector3.new(6, 1, 6), Vector3.new(s[1], s[2], s[3]), PALETTE[11], Enum.Material.SmoothPlastic, {})
+			end
+			return Vector3.new(0, 10, 52)
+		end,
+	},
+}
+
+-- стартовая площадка + табличка OBBY
+makePart({
+	Name = &quot;StartPad&quot;,
+	Size = Vector3.new(16, 1, 16),
+	CFrame = CFrame.new(START),
+	Color = Color3.fromRGB(96, 104, 122),
+	Material = Enum.Material.Concrete,
+	Parent = obbyFolder,
+})
+
+local function addSign(text, color, position, size)
+	local anchor = makePart({
+		Name = &quot;SignAnchor&quot;,
+		Size = Vector3.new(1, 1, 1),
+		CFrame = CFrame.new(position),
+		Transparency = 1,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Parent = obbyFolder,
+	})
+	local billboard = Instance.new(&quot;BillboardGui&quot;)
+	billboard.Size = UDim2.fromOffset(size, size * 0.28)
+	billboard.MaxDistance = 900
+	billboard.Adornee = anchor
+	billboard.Parent = anchor
+	local label = Instance.new(&quot;TextLabel&quot;)
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Font = Enum.Font.GothamBlack
+	label.Text = text
+	label.TextColor3 = color
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.35
+	label.Parent = billboard
+	return anchor
+end
+
+addSign(&quot;OBBY — 11 стейджей →&quot;, Color3.fromRGB(255, 215, 94), START + Vector3.new(0, 14, 0), 620)
+addCheckpoint(0, START)
+
+-- строим стейджи друг за другом: каждый начинается с чекпоинта предыдущего
+local base = CFrame.new(START)
+for i, stage in ipairs(STAGES) do
+	local folder = Instance.new(&quot;Folder&quot;)
+	folder.Name = (&quot;Stage%d_%s&quot;):format(i, stage.Name)
+	folder.Parent = obbyFolder
+
+	local cpOffset = stage.Build(folder, base)
+	local cp = addCheckpoint(i, base * cpOffset)
+
+	-- табличка с названием стейджа над чекпоинтом
+	addSign((&quot;%d. %s&quot;):format(i, stage.Name), PALETTE[i], cp.Position + Vector3.new(0, 9, 0), 420)
+
+	base = CFrame.new(cp.Position)
+end
+
+-- финиш
+local finPos = base * Vector3.new(0, 0, 18)
+finishPad = makePart({
+	Name = &quot;Finish&quot;,
+	Size = Vector3.new(16, 1, 16),
+	CFrame = CFrame.new(finPos),
+	Color = FINISH_COLOR,
+	Material = Enum.Material.Neon,
+	Parent = obbyFolder,
+})
+addSign(&quot;FINISH 🏁&quot;, FINISH_COLOR, finPos + Vector3.new(0, 16, 0), 700)
+
+-- декоративные облака
+for i = 1, 10 do
+	local a = (i / 10) * math.pi * 2
+	local dist = 120 + (i % 3) * 60
+	makePart({
+		Name = &quot;Cloud&quot;,
+		Size = Vector3.new(40 + (i % 4) * 14, 8, 26),
+		CFrame = CFrame.new(math.cos(a) * dist, 90 + (i % 3) * 12, math.sin(a) * dist),
+		Color = Color3.fromRGB(240, 244, 250),
+		Material = Enum.Material.SmoothPlastic,
+		CanCollide = false,
+		CanTouch = false,
+		CanQuery = false,
+		Parent = obbyFolder,
+	})
+end
+
+-- ============================================================
+--  ДВИЖУЩИЕСЯ ЧАСТИ (обновление каждый кадр; игроков тащат за собой)
+-- ============================================================
+
+RunService.Heartbeat:Connect(function()
+	local t = os.clock()
+	for _, fn in ipairs(updaters) do
+		fn(t)
+	end
+end)
+
+-- ============================================================
+--  ЛАВА / ШТАНГА: касание = смерть
+-- ============================================================
+
+local function killOnTouch(part)
+	part.Touched:Connect(function(hit)
+		local character = hit:FindFirstAncestorOfClass(&quot;Model&quot;)
+		if not character or character:GetAttribute(&quot;ObbyDead&quot;) then
+			return
+		end
+		local humanoid = character:FindFirstChildOfClass(&quot;Humanoid&quot;)
+		if humanoid and humanoid.Health &gt; 0 then
+			character:SetAttribute(&quot;ObbyDead&quot;, true)
+			humanoid.Health = 0
+		end
+	end)
+end
+
+for _, part in ipairs(killParts) do
+	killOnTouch(part)
+end
+
+-- падение в пустоту = смерть
+task.spawn(function()
+	while true do
+		task.wait(0.4)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			if character then
+				local root = character:FindFirstChild(&quot;HumanoidRootPart&quot;)
+				local humanoid = character:FindFirstChildOfClass(&quot;Humanoid&quot;)
+				if root and root:IsA(&quot;BasePart&quot;) and humanoid and humanoid.Health &gt; 0 and root.Position.Y &lt; CONFIG.FallKillY then
+					humanoid.Health = 0
+				end
+			end
+		end
+	end
+end)
+
+-- ============================================================
+--  КОНВЕЙЕР
+-- ============================================================
+
+task.spawn(function()
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	while true do
+		task.wait(0.06)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			local root = character and character:FindFirstChild(&quot;HumanoidRootPart&quot;)
+			if root and root:IsA(&quot;BasePart&quot;) then
+				params.FilterDescendantsInstances = { character }
+				local hit = workspace:Raycast(root.Position, Vector3.new(0, -5, 0), params)
+				if hit and hit.Instance.Name == &quot;Conveyor&quot; then
+					local push = hit.Instance:GetAttribute(&quot;PushZ&quot;) or -CONFIG.ConveyorSpeed
+					local vel = root.AssemblyLinearVelocity
+					root.AssemblyLinearVelocity = Vector3.new(vel.X, vel.Y, push)
+				end
+			end
+		end
+	end
+end)
+
+-- ============================================================
+--  СТАТИСТИКА, ДАННЫЕ, ЛОГИКА СТЕЙДЖЕЙ
+-- ============================================================
+
+local store = nil
+if CONFIG.SaveData then
+	local ok, result = pcall(function()
+		return DataStoreService:GetDataStore(&quot;ObbyStats_v1&quot;)
+	end)
+	if ok then
+		store = result
+	end
+end
+
+local stageOf = {} -- [Player] = текущий стейдж
+local runStart = {} -- [Player] = os.clock() старта забега (nil, пока стейдж 0)
+local lastSave = {} -- [Player] = os.clock() прошлого сейва
+local skipCooldown = {} -- [Player] = os.clock() последнего скипа
+local continued = {} -- [Player] = уже телепортировали на сохранённый стейдж
+
+local function announce(payload)
+	announcer:FireAllClients(payload)
+end
+
+local function savePlayer(player)
+	if not store then
+		return
+	end
+	local now = os.clock()
+	if now - (lastSave[player] or -math.huge) &lt; CONFIG.SaveInterval then
+		return
+	end
+	lastSave[player] = now
+	local data = {
+		BestStage = player:GetAttribute(&quot;BestStage&quot;) or 0,
+		BestTime = player:GetAttribute(&quot;BestTime&quot;),
+		Wins = 0,
+	}
+	local wins = player:FindFirstChild(&quot;leaderstats&quot;) and player.leaderstats:FindFirstChild(&quot;Wins&quot;)
+	if wins then
+		data.Wins = wins.Value
+	end
+	task.spawn(function()
+		pcall(function()
+			store:SetAsync(&quot;p&quot; .. tostring(player.UserId), data)
+		end)
+	end)
+end
+
+local function teleportTo(player, position)
+	local character = player.Character
+	local root = character and character:FindFirstChild(&quot;HumanoidRootPart&quot;)
+	if root and root:IsA(&quot;BasePart&quot;) then
+		root.CFrame = CFrame.new(position + Vector3.new(0, 4, 0))
+		root.AssemblyLinearVelocity = Vector3.zero
+	end
+end
+
+local function setStage(player, stage, silent)
+	stageOf[player] = stage
+	local stats = player:FindFirstChild(&quot;leaderstats&quot;)
+	local value = stats and stats:FindFirstChild(&quot;Stage&quot;)
+	if value then
+		value.Value = stage
+	end
+
+	local best = player:GetAttribute(&quot;BestStage&quot;) or 0
+	if stage &gt; best then
+		player:SetAttribute(&quot;BestStage&quot;, stage)
+	end
+
+	local cp = checkpoints[stage]
+	if cp then
+		player.RespawnLocation = cp
+	end
+
+	if stage &gt;= 1 and not runStart[player] then
+		runStart[player] = os.clock()
+		announcer:FireClient(player, { Kind = &quot;RunStart&quot; })
+	end
+
+	if not silent and stage &gt;= 1 then
+		announce({
+			Kind = &quot;Checkpoint&quot;,
+			Stage = stage,
+			Text = (&quot;Чекпоинт %d! %s&quot;):format(stage, STAGES[stage] and STAGES[stage].Name or &quot;&quot;),
+		})
+	end
+	savePlayer(player)
+end
+
+local function doSkip(player)
+	if not CONFIG.SkipEnabled then
+		return
+	end
+	local now = os.clock()
+	if now - (skipCooldown[player] or -math.huge) &lt; CONFIG.SkipCooldown then
+		return
+	end
+	local stage = stageOf[player] or 0
+	if stage &gt;= CONFIG.StageCount then
+		-- последний чекпоинт: скип сразу на финиш
+		skipCooldown[player] = now
+		teleportTo(player, finishPad.Position)
+		announce({ Kind = &quot;Skip&quot;, Stage = stage, Text = &quot;Скип: финиш!&quot; })
+		return
+	end
+	skipCooldown[player] = now
+	setStage(player, stage + 1)
+	local cp = checkpoints[stage + 1]
+	if cp then
+		teleportTo(player, cp.Position)
+	end
+	announce({ Kind = &quot;Skip&quot;, Stage = stage, Text = (&quot;Скип %d → %d&quot;):format(stage, stage + 1) })
+end
+
+-- чекпоинты: принимаем только «следующий» стейдж, назад не откатываем
+for index, pad in pairs(checkpoints) do
+	pad.Touched:Connect(function(hit)
+		local character = hit:FindFirstAncestorOfClass(&quot;Model&quot;)
+		local player = character and Players:GetPlayerFromCharacter(character)
+		if not player then
+			return
+		end
+		local stage = stageOf[player] or 0
+		if index == stage + 1 then
+			setStage(player, index)
+		end
+	end)
+end
+
+-- кнопки SKIP
+for _, part in ipairs(obbyFolder:GetChildren()) do
+	if part:IsA(&quot;BasePart&quot;) and part:GetAttribute(&quot;SkipIndex&quot;) then
+		local index = part:GetAttribute(&quot;SkipIndex&quot;)
+		part.Touched:Connect(function(hit)
+			local character = hit:FindFirstAncestorOfClass(&quot;Model&quot;)
+			local player = character and Players:GetPlayerFromCharacter(character)
+			if not player then
+				return
+			end
+			if (stageOf[player] or 0) == index then
+				doSkip(player)
+			end
+		end)
+	end
+end
+
+-- финиш
+finishPad.Touched:Connect(function(hit)
+	local character = hit:FindFirstAncestorOfClass(&quot;Model&quot;)
+	local player = character and Players:GetPlayerFromCharacter(character)
+	if not player or player:GetAttribute(&quot;ObbyFinished&quot;) then
+		return
+	end
+	player:SetAttribute(&quot;ObbyFinished&quot;, true)
+
+	local elapsed = nil
+	if runStart[player] then
+		elapsed = os.clock() - runStart[player]
+	end
+
+	local bestTime = player:GetAttribute(&quot;BestTime&quot;)
+	if elapsed and (not bestTime or elapsed &lt; bestTime) then
+		player:SetAttribute(&quot;BestTime&quot;, elapsed)
+	end
+
+	local stats = player:FindFirstChild(&quot;leaderstats&quot;)
+	local wins = stats and stats:FindFirstChild(&quot;Wins&quot;)
+	if wins then
+		wins.Value += 1
+	end
+
+	if elapsed then
+		announce({
+			Kind = &quot;Win&quot;,
+			Stage = CONFIG.StageCount,
+			Time = elapsed,
+			Text = (&quot;%s прошёл обби! Время %s&quot;):format(player.DisplayName, (&quot;%d:%05.2f&quot;):format(math.floor(elapsed / 60), elapsed % 60)),
+		})
+	else
+		announce({ Kind = &quot;Win&quot;, Stage = CONFIG.StageCount, Time = 0, Text = (&quot;%s добрался до финиша!&quot;):format(player.DisplayName) })
+	end
+	savePlayer(player)
+
+	-- через 5 секунд возвращаем на старт для нового забега
+	task.delay(5, function()
+		if not player.Parent then
+			return
+		end
+		player:SetAttribute(&quot;ObbyFinished&quot;, false)
+		runStart[player] = nil
+		setStage(player, 0, true)
+		local startPad = checkpoints[0]
+		if startPad then
+			player.RespawnLocation = startPad
+			teleportTo(player, startPad.Position)
+		end
+		announcer:FireClient(player, { Kind = &quot;Restarted&quot; })
+	end)
+end)
+
+-- кнопки из HUD: Reset (к чекпоинту) / Restart (с начала)
+actionRemote.OnServerEvent:Connect(function(player, action)
+	if typeof(action) ~= &quot;string&quot; then
+		return
+	end
+	local stage = stageOf[player] or 0
+	if action == &quot;Reset&quot; then
+		local cp = checkpoints[stage]
+		if cp then
+			teleportTo(player, cp.Position)
+		end
+		announcer:FireClient(player, { Kind = &quot;Reset&quot;, Stage = stage, Text = (&quot;Сброс: чекпоинт %d&quot;):format(stage) })
+	elseif action == &quot;Restart&quot; then
+		runStart[player] = nil
+		setStage(player, 0, true)
+		local startPad = checkpoints[0]
+		if startPad then
+			player.RespawnLocation = startPad
+			teleportTo(player, startPad.Position)
+		end
+		announcer:FireClient(player, { Kind = &quot;Restarted&quot; })
+	end
+end)
+
+-- ============================================================
+--  ИГРОКИ
+-- ============================================================
+
+local function onCharacterAdded(player, character)
+	local humanoid = character:WaitForChild(&quot;Humanoid&quot;)
+	humanoid.WalkSpeed = CONFIG.WalkSpeed
+	humanoid.UseJumpPower = true
+	humanoid.JumpPower = CONFIG.JumpPower
+
+	character:SetAttribute(&quot;ObbyDead&quot;, false)
+
+	-- респавн на текущем чекпоинте
+	local stage = stageOf[player] or 0
+	local cp = checkpoints[stage]
+	if cp then
+		player.RespawnLocation = cp
+	end
+
+	-- первый спавн: если есть сохранённый прогресс — продолжаем с него
+	if not continued[player] then
+		continued[player] = true
+		local best = player:GetAttribute(&quot;BestStage&quot;) or 0
+		if best &gt;= 1 and checkpoints[best] then
+			task.delay(0.6, function()
+				if player.Character ~= character then
+					return
+				end
+				setStage(player, best)
+				teleportTo(player, checkpoints[best].Position)
+				announcer:FireClient(player, { Kind = &quot;Welcome&quot;, Stage = best, Text = (&quot;Продолжаем со стейджа %d&quot;):format(best) })
+			end)
+		end
+	end
+
+	humanoid.Died:Connect(function()
+		local deaths = player:GetAttribute(&quot;Deaths&quot;) or 0
+		player:SetAttribute(&quot;Deaths&quot;, deaths + 1)
+	end)
+end
+
+local function onPlayerAdded(player)
+	local stats = Instance.new(&quot;Folder&quot;)
+	stats.Name = &quot;leaderstats&quot;
+
+	local stageValue = Instance.new(&quot;IntValue&quot;)
+	stageValue.Name = &quot;Stage&quot;
+	stageValue.Parent = stats
+
+	local winsValue = Instance.new(&quot;IntValue&quot;)
+	winsValue.Name = &quot;Wins&quot;
+	winsValue.Parent = stats
+
+	stats.Parent = player
+
+	player:SetAttribute(&quot;BestStage&quot;, 0)
+	player:SetAttribute(&quot;Deaths&quot;, 0)
+	player:SetAttribute(&quot;BestTime&quot;, nil)
+	stageOf[player] = 0
+
+	-- загрузка сохранения
+	if store then
+		task.spawn(function()
+			local ok, data = pcall(function()
+				return store:GetAsync(&quot;p&quot; .. tostring(player.UserId))
+			end)
+			if ok and typeof(data) == &quot;table&quot; then
+				player:SetAttribute(&quot;BestStage&quot;, tonumber(data.BestStage) or 0)
+				if typeof(data.BestTime) == &quot;number&quot; then
+					player:SetAttribute(&quot;BestTime&quot;, data.BestTime)
+				end
+				if winsValue.Parent and tonumber(data.Wins) then
+					winsValue.Value = math.floor(tonumber(data.Wins))
+				end
+			end
+			announcer:FireClient(player, { Kind = &quot;Loaded&quot; })
+		end)
+	end
+
+	local startPad = checkpoints[0]
+	if startPad then
+		player.RespawnLocation = startPad
+	end
+	Players.RespawnTime = CONFIG.RespawnTime
+
+	player.CharacterAdded:Connect(function(character)
+		onCharacterAdded(player, character)
+	end)
+	if player.Character then
+		task.spawn(onCharacterAdded, player, player.Character)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+	savePlayer(player)
+	-- финальный сейв без троттлинга
+	if store then
+		local data = {
+			BestStage = player:GetAttribute(&quot;BestStage&quot;) or 0,
+			BestTime = player:GetAttribute(&quot;BestTime&quot;),
+			Wins = 0,
+		}
+		local wins = player:FindFirstChild(&quot;leaderstats&quot;) and player.leaderstats:FindFirstChild(&quot;Wins&quot;)
+		if wins then
+			data.Wins = wins.Value
+		end
+		pcall(function()
+			store:SetAsync(&quot;p&quot; .. tostring(player.UserId), data)
+		end)
+	end
+	stageOf[player] = nil
+	runStart[player] = nil
+	lastSave[player] = nil
+	skipCooldown[player] = nil
+	continued[player] = nil
+end)
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, player)
+end
+
+print((&quot;[Obby] Трасса готова: %d стейджей, %d чекпоинтов, скип %s, сохранение %s&quot;):format(
+	#STAGES,
+	CONFIG.StageCount + 1,
+	CONFIG.SkipEnabled and &quot;вкл&quot; or &quot;выкл&quot;,
+	store and &quot;вкл&quot; or &quot;выкл (API Services выключен)&quot;
+))
+</ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="StarterPlayer" referent="RBXSTARTERPLAYER">
+		<Properties>
+			<string name="Name">StarterPlayer</string>
+		</Properties>
+		<Item class="StarterPlayerScripts" referent="RBXSTARTERPLAYERSCRIPTS">
+			<Properties>
+				<string name="Name">StarterPlayerScripts</string>
+			</Properties>
+			<Item class="LocalScript" referent="RBXOBBYHUD">
+				<Properties>
+					<string name="Name">ObbyHud</string>
+					<bool name="Disabled">false</bool>
+					<ProtectedString name="Source">--!nonstrict
+-- Obby HUD | StarterPlayer &gt; StarterPlayerScripts &gt; LocalScript
+-- Ставится вместе с ObbyServer.luau (ServerScriptService &gt; Script).
+-- Рисует: панель стейджа/времени/рекорда, баннеры чекпоинтов, кнопки «Сброс» и «С начала».
+
+local Players = game:GetService(&quot;Players&quot;)
+local ReplicatedStorage = game:GetService(&quot;ReplicatedStorage&quot;)
+local TweenService = game:GetService(&quot;TweenService&quot;)
+
+local player = Players.LocalPlayer
+
+local remotes = ReplicatedStorage:WaitForChild(&quot;ObbyRemotes&quot;)
+local announcer = remotes:WaitForChild(&quot;Announce&quot;) :: RemoteEvent
+local actionRemote = remotes:WaitForChild(&quot;Action&quot;) :: RemoteEvent
+
+local COL = {
+	panel = Color3.fromRGB(10, 14, 22),
+	text = Color3.fromRGB(232, 236, 241),
+	dim = Color3.fromRGB(159, 176, 200),
+	accent = Color3.fromRGB(255, 215, 94),
+	good = Color3.fromRGB(60, 220, 110),
+	danger = Color3.fromRGB(255, 92, 92),
+}
+
+local STAGE_COUNT = 11
+
+local function fmtTime(t)
+	t = math.max(0, tonumber(t) or 0)
+	return (&quot;%d:%05.2f&quot;):format(math.floor(t / 60), t % 60)
+end
+
+local gui = Instance.new(&quot;ScreenGui&quot;)
+gui.Name = &quot;ObbyHud&quot;
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player:WaitForChild(&quot;PlayerGui&quot;)
+
+local function corner(parent, radius)
+	local c = Instance.new(&quot;UICorner&quot;)
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = parent
+end
+
+-- ---------- панель (слева сверху) ----------
+local panel = Instance.new(&quot;Frame&quot;)
+panel.BackgroundColor3 = COL.panel
+panel.BackgroundTransparency = 0.2
+panel.BorderSizePixel = 0
+panel.Position = UDim2.fromOffset(14, 14)
+panel.Size = UDim2.fromOffset(236, 158)
+panel.Parent = gui
+corner(panel, 10)
+
+local function row(y, color, size, bold)
+	local l = Instance.new(&quot;TextLabel&quot;)
+	l.BackgroundTransparency = 1
+	l.Position = UDim2.fromOffset(14, y)
+	l.Size = UDim2.new(1, -28, 0, size + 8)
+	l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	l.TextSize = size
+	l.TextColor3 = color
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextStrokeTransparency = 0.65
+	l.Text = &quot;&quot;
+	l.Parent = panel
+	return l
+end
+
+local title = row(8, COL.accent, 17, true)
+title.Text = &quot;OBBY&quot;
+local stageLabel = row(36, COL.text, 16, true)
+local timeLabel = row(60, COL.text, 15)
+local recordLabel = row(84, COL.dim, 13)
+local bestStageLabel = row(104, COL.dim, 13)
+local deathsLabel = row(124, COL.dim, 13)
+
+-- ---------- баннер по центру ----------
+local banner = Instance.new(&quot;TextLabel&quot;)
+banner.AnchorPoint = Vector2.new(0.5, 0)
+banner.Position = UDim2.new(0.5, 0, 0, 96)
+banner.Size = UDim2.fromOffset(720, 44)
+banner.BackgroundTransparency = 1
+banner.Font = Enum.Font.GothamBlack
+banner.TextSize = 30
+banner.TextColor3 = COL.accent
+banner.TextStrokeColor3 = Color3.fromRGB(20, 24, 34)
+banner.TextStrokeTransparency = 0.45
+banner.TextTransparency = 1
+banner.Text = &quot;&quot;
+banner.ZIndex = 7
+banner.Parent = gui
+
+local function announce(text, color, big)
+	banner.Text = text
+	banner.TextColor3 = color or COL.accent
+	banner.TextSize = big and 40 or 30
+	banner.TextTransparency = 0
+	task.delay(2.4, function()
+		TweenService:Create(banner, TweenInfo.new(0.5), { TextTransparency = 1 }):Play()
+	end)
+end
+
+-- ---------- маленькие всплывашки снизу ----------
+local toastBox = Instance.new(&quot;Frame&quot;)
+toastBox.AnchorPoint = Vector2.new(0.5, 1)
+toastBox.Position = UDim2.new(0.5, 0, 1, -70)
+toastBox.Size = UDim2.fromOffset(420, 60)
+toastBox.BackgroundTransparency = 1
+toastBox.Parent = gui
+
+local toastLayout = Instance.new(&quot;UIListLayout&quot;)
+toastLayout.Padding = UDim.new(0, 6)
+toastLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+toastLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+toastLayout.SortOrder = Enum.SortOrder.LayoutOrder
+toastLayout.Parent = toastBox
+
+local toastOrder = 0
+
+local function toast(text)
+	toastOrder -= 1
+	local entry = Instance.new(&quot;TextLabel&quot;)
+	entry.LayoutOrder = toastOrder
+	entry.AutomaticSize = Enum.AutomaticSize.X
+	entry.Size = UDim2.fromOffset(0, 26)
+	entry.BackgroundColor3 = COL.panel
+	entry.BackgroundTransparency = 0.25
+	entry.BorderSizePixel = 0
+	entry.Font = Enum.Font.GothamBold
+	entry.TextSize = 14
+	entry.TextColor3 = COL.text
+	entry.Text = text
+	entry.Parent = toastBox
+	local pad = Instance.new(&quot;UIPadding&quot;)
+	pad.PaddingLeft = UDim.new(0, 10)
+	pad.PaddingRight = UDim.new(0, 10)
+	pad.Parent = entry
+	corner(entry, 8)
+	task.delay(4, function()
+		TweenService:Create(entry, TweenInfo.new(0.4), { BackgroundTransparency = 1, TextTransparency = 1 }):Play()
+	end)
+	task.delay(4.5, function()
+		entry:Destroy()
+	end)
+end
+
+-- ---------- кнопки справа снизу ----------
+local function makeButton(text, y, color)
+	local b = Instance.new(&quot;TextButton&quot;)
+	b.BackgroundColor3 = COL.panel
+	b.BackgroundTransparency = 0.2
+	b.BorderSizePixel = 0
+	b.Position = UDim2.new(1, -14 - 168, 1, y)
+	b.Size = UDim2.fromOffset(168, 40)
+	b.AnchorPoint = Vector2.new(0, 1)
+	b.AutoButtonColor = true
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 15
+	b.TextColor3 = color or COL.text
+	b.TextStrokeTransparency = 0.6
+	b.Text = text
+	b.Parent = gui
+	corner(b, 10)
+
+	local stroke = Instance.new(&quot;UIStroke&quot;)
+	stroke.Color = Color3.fromRGB(58, 74, 107)
+	stroke.Thickness = 1
+	stroke.Parent = b
+
+	b.MouseButton1Click:Connect(function()
+		actionRemote:FireServer(text:find(&quot;Сброс&quot;) and &quot;Reset&quot; or &quot;Restart&quot;)
+	end)
+	return b
+end
+
+makeButton(&quot;⟲ Сброс к чекпоинту&quot;, -62)
+makeButton(&quot;⏮ С начала&quot;, -14, COL.dim)
+
+-- ---------- таймер ----------
+local running = false
+local runStartClock = 0
+local frozenTime = nil
+
+local function renderTime()
+	local t
+	if frozenTime then
+		t = frozenTime
+	elseif running then
+		t = os.clock() - runStartClock
+	else
+		t = 0
+	end
+	timeLabel.Text = (&quot;ВРЕМЯ  %s&quot;):format(fmtTime(t))
+end
+
+task.spawn(function()
+	while true do
+		renderTime()
+		task.wait(0.1)
+	end
+end)
+
+-- ---------- статистика ----------
+local function renderStats()
+	local stats = player:FindFirstChild(&quot;leaderstats&quot;)
+	local stage = 0
+	local stageValue = stats and stats:FindFirstChild(&quot;Stage&quot;)
+	if stageValue and stageValue:IsA(&quot;IntValue&quot;) then
+		stage = stageValue.Value
+	end
+	stageLabel.Text = (&quot;СТЕЙДЖ  %d / %d&quot;):format(stage, STAGE_COUNT)
+
+	local bestTime = player:GetAttribute(&quot;BestTime&quot;)
+	recordLabel.Text = (&quot;РЕКОРД  %s&quot;):format(if typeof(bestTime) == &quot;number&quot; and bestTime &gt; 0 then fmtTime(bestTime) else &quot;—&quot;)
+
+	local bestStage = player:GetAttribute(&quot;BestStage&quot;) or 0
+	bestStageLabel.Text = (&quot;ЛУЧШИЙ СТЕЙДЖ  %d / %d&quot;):format(bestStage, STAGE_COUNT)
+
+	local deaths = player:GetAttribute(&quot;Deaths&quot;) or 0
+	deathsLabel.Text = (&quot;СМЕРТИ  %d&quot;):format(deaths)
+end
+
+task.spawn(function()
+	local stats = player:WaitForChild(&quot;leaderstats&quot;)
+	local stageValue = stats:WaitForChild(&quot;Stage&quot;) :: IntValue
+	stageValue:GetPropertyChangedSignal(&quot;Value&quot;):Connect(renderStats)
+	player:GetAttributeChangedSignal(&quot;BestTime&quot;):Connect(renderStats)
+	player:GetAttributeChangedSignal(&quot;BestStage&quot;):Connect(renderStats)
+	player:GetAttributeChangedSignal(&quot;Deaths&quot;):Connect(renderStats)
+	renderStats()
+end)
+
+-- ---------- сообщения от сервера ----------
+announcer.OnClientEvent:Connect(function(payload)
+	if typeof(payload) ~= &quot;table&quot; then
+		return
+	end
+	local kind = payload.Kind
+	if kind == &quot;Checkpoint&quot; then
+		announce(payload.Text or (&quot;Чекпоинт %d!&quot;):format(payload.Stage or 0), COL.good)
+	elseif kind == &quot;Skip&quot; then
+		announce(payload.Text or &quot;Скип!&quot;, COL.accent)
+	elseif kind == &quot;Win&quot; then
+		announce(payload.Text or &quot;🏁 ФИНИШ!&quot;, COL.accent, true)
+		if typeof(payload.Time) == &quot;number&quot; and payload.Time &gt; 0 then
+			frozenTime = payload.Time
+			running = false
+		end
+	elseif kind == &quot;RunStart&quot; then
+		running = true
+		frozenTime = nil
+		runStartClock = os.clock()
+	elseif kind == &quot;Restarted&quot; then
+		running = false
+		frozenTime = nil
+		toast(&quot;Новый забег! Время сброшено&quot;)
+	elseif kind == &quot;Reset&quot; then
+		toast(payload.Text or &quot;Сброс к чекпоинту&quot;)
+	elseif kind == &quot;Welcome&quot; then
+		toast(payload.Text or &quot;Продолжаем!&quot;)
+	end
+end)
+
+-- ---------- подсказка управления ----------
+local hint = Instance.new(&quot;TextLabel&quot;)
+hint.AnchorPoint = Vector2.new(0.5, 1)
+hint.Position = UDim2.new(0.5, 0, 1, -16)
+hint.Size = UDim2.fromOffset(680, 20)
+hint.BackgroundTransparency = 1
+hint.Font = Enum.Font.GothamBold
+hint.TextSize = 14
+hint.TextColor3 = COL.text
+hint.TextStrokeTransparency = 0.7
+hint.TextTransparency = 1
+hint.Text = &quot;WASD — бег · Пробел — прыжок · жёлтая кнопка SKIP — пропустить стейдж · зелёный чекпоинт — сохранение&quot;
+hint.ZIndex = 4
+hint.Parent = gui
+
+TweenService:Create(hint, TweenInfo.new(0.6), { TextTransparency = 0.25 }):Play()
+task.delay(15, function()
+	TweenService:Create(hint, TweenInfo.new(1), { TextTransparency = 1 }):Play()
+end)
+</ProtectedString>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>
