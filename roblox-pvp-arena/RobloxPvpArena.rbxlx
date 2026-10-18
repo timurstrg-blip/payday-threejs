@@ -1,0 +1,915 @@
+<?xml version="1.0" encoding="utf-8"?>
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Item class="Workspace" referent="RBXWORKSPACE">
+		<Properties>
+			<string name="Name">Workspace</string>
+			<bool name="StreamingEnabled">false</bool>
+		</Properties>
+	</Item>
+	<Item class="Lighting" referent="RBXLIGHTING">
+		<Properties>
+			<string name="Name">Lighting</string>
+		</Properties>
+	</Item>
+	<Item class="ServerScriptService" referent="RBXSERVICESCRIPTSERVICE">
+		<Properties>
+			<string name="Name">ServerScriptService</string>
+		</Properties>
+		<Item class="Script" referent="RBXPVPARENASERVER">
+			<Properties>
+				<string name="Name">PvpArenaServer</string>
+				<bool name="Disabled">false</bool>
+				<ProtectedString name="Source">--!strict
+-- PvP Arena Kit v1 | ServerScriptService &gt; Script (обычный Script, не LocalScript)
+-- Что делает: строит арену (круг, центральная платформа, 4 трапа, колонны, ящики, 8 спавнов),
+-- выдаёт мечи, считает убийства/смерти/серии, показывает killfeed, регенерирует HP.
+-- Установка: ServerScriptService &gt; Script &gt; вставить код целиком &gt; Play.
+-- HUD: StarterPlayer &gt; StarterPlayerScripts &gt; LocalScript (файл PvpArenaHud.luau).
+-- Публикация: File &gt; Publish to Roblox &gt; название &gt; Publish. Ссылка: roblox.com/games/&lt;ID&gt;
+
+local Players = game:GetService(&quot;Players&quot;)
+local ReplicatedStorage = game:GetService(&quot;ReplicatedStorage&quot;)
+local Lighting = game:GetService(&quot;Lighting&quot;)
+
+local CONFIG = {
+	ArenaRadius = 70, -- радиус арены
+	SpawnCount = 8, -- сколько спавн-площадок
+	SpawnRadius = 55, -- на каком радиусе стоят спавны
+	FallKillY = -45, -- ниже этой высоты игрок погибает
+	RespawnTime = 3, -- секунд до респавна
+
+	SwordDamage = 24, -- урон меча
+	SwordRange = 10, -- дальность удара (студы)
+	SwordArc = 0.35, -- ширина конуса удара (dot product чем больше, тем уже)
+	SwordCooldown = 0.45, -- перезарядка удара
+
+	RegenDelay = 6, -- через сколько секунд без урона начинается реген
+	RegenRate = 2, -- HP в секунду
+	WalkSpeed = 18,
+	JumpPower = 52,
+
+	AssistWindow = 8, -- сколько секунд урон считается &quot;своим&quot; для убийства
+	StreakAnnounce = { 3, 5, 7, 10, 15, 20, 30 },
+}
+
+-- ============================================================
+--  ХЕЛПЕРЫ
+-- ============================================================
+
+local function makePart(props: { [string]: any }): Part
+	local p = Instance.new(&quot;Part&quot;)
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	for k, v in pairs(props) do
+		(p :: any)[k] = v
+	end
+	return p
+end
+
+-- чистим старую карту (baseplate, дефолтный спавн и т.п.), оставляя камеру и terrain
+for _, child in ipairs(workspace:GetChildren()) do
+	if not child:IsA(&quot;Camera&quot;) and not child:IsA(&quot;Terrain&quot;) then
+		child:Destroy()
+	end
+end
+
+-- ============================================================
+--  REMOTES (клиент и сервер общаются через них)
+-- ============================================================
+
+local remotes = ReplicatedStorage:FindFirstChild(&quot;Remotes&quot;)
+if not remotes then
+	remotes = Instance.new(&quot;Folder&quot;)
+	remotes.Name = &quot;Remotes&quot;
+	remotes.Parent = ReplicatedStorage
+end
+remotes = remotes :: Folder
+
+local function ensureRemote(name: string, className: string): Instance
+	local r = (remotes :: Folder):FindFirstChild(name)
+	if not r then
+		r = Instance.new(className)
+		r.Name = name
+		r.Parent = remotes
+	end
+	return r :: Instance
+end
+
+local killFeedRemote = ensureRemote(&quot;KillFeed&quot;, &quot;RemoteEvent&quot;) :: RemoteEvent
+local hitmarkerRemote = ensureRemote(&quot;Hitmarker&quot;, &quot;RemoteEvent&quot;) :: RemoteEvent
+
+-- ============================================================
+--  СВЕТ И АТМОСФЕРА
+-- ============================================================
+
+for _, e in ipairs(Lighting:GetChildren()) do
+	if e:IsA(&quot;Atmosphere&quot;) or e:IsA(&quot;BloomEffect&quot;) or e:IsA(&quot;ColorCorrectionEffect&quot;) or e:IsA(&quot;SunRaysEffect&quot;) then
+		e:Destroy()
+	end
+end
+
+Lighting.ClockTime = 15.2
+Lighting.Brightness = 2.2
+Lighting.Ambient = Color3.fromRGB(96, 106, 128)
+Lighting.OutdoorAmbient = Color3.fromRGB(118, 130, 152)
+Lighting.EnvironmentDiffuseScale = 0.35
+Lighting.EnvironmentSpecularScale = 0.6
+Lighting.ExposureCompensation = 0.1
+Lighting.GlobalShadows = true
+
+local atmosphere = Instance.new(&quot;Atmosphere&quot;)
+atmosphere.Density = 0.32
+atmosphere.Haze = 1.6
+atmosphere.Glare = 0.15
+atmosphere.Color = Color3.fromRGB(199, 211, 226)
+atmosphere.Decay = Color3.fromRGB(96, 110, 134)
+atmosphere.Parent = Lighting
+
+local bloom = Instance.new(&quot;BloomEffect&quot;)
+bloom.Intensity = 0.55
+bloom.Size = 22
+bloom.Threshold = 1.1
+bloom.Parent = Lighting
+
+local colorCorrection = Instance.new(&quot;ColorCorrectionEffect&quot;)
+colorCorrection.Contrast = 0.06
+colorCorrection.Saturation = 0.07
+colorCorrection.Parent = Lighting
+
+local sunRays = Instance.new(&quot;SunRaysEffect&quot;)
+sunRays.Intensity = 0.08
+sunRays.Spread = 0.8
+sunRays.Parent = Lighting
+
+-- ============================================================
+--  АРЕНА (та же карта, что в pvp.html)
+-- ============================================================
+
+local R = CONFIG.ArenaRadius
+local arenaFolder = Instance.new(&quot;Folder&quot;)
+arenaFolder.Name = &quot;Arena&quot;
+arenaFolder.Parent = workspace
+
+-- круглый пол
+makePart({
+	Name = &quot;Platform&quot;,
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(4, R * 2, R * 2),
+	CFrame = CFrame.new(0, -2, 0) * CFrame.Angles(0, 0, math.rad(90)),
+	Color = Color3.fromRGB(72, 79, 95),
+	Material = Enum.Material.Slate,
+	Parent = arenaFolder,
+})
+
+-- неоновый бортик по краю
+local SEGS = 36
+local segLen = 2 * R * math.sin(math.pi / SEGS)
+for i = 0, SEGS - 1 do
+	local a = (i / SEGS) * math.pi * 2
+	local pos = Vector3.new(math.cos(a) * (R - 1), 0.75, math.sin(a) * (R - 1))
+	makePart({
+		Name = &quot;Border&quot;,
+		Size = Vector3.new(2, 1.5, segLen + 0.6),
+		CFrame = CFrame.lookAt(pos, Vector3.new(0, pos.Y, 0)),
+		Color = Color3.fromRGB(255, 90, 90),
+		Material = Enum.Material.Neon,
+		Parent = arenaFolder,
+	})
+end
+
+-- центральная платформа (высота 8)
+local CENTER_Y = 8
+local CENTER_R = 18
+makePart({
+	Name = &quot;CenterPlatform&quot;,
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(1.5, CENTER_R * 2, CENTER_R * 2),
+	CFrame = CFrame.new(0, CENTER_Y - 0.75, 0) * CFrame.Angles(0, 0, math.rad(90)),
+	Color = Color3.fromRGB(96, 104, 122),
+	Material = Enum.Material.Concrete,
+	Parent = arenaFolder,
+})
+
+-- 4 трапа: от земли (радиус 30) к центру (радиус 16, высота 8)
+for k = 0, 3 do
+	local a = math.rad(45 + 90 * k)
+	local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+	local p1 = dir * 30 + Vector3.new(0, 0.5, 0)
+	local p2 = dir * 16 + Vector3.new(0, CENTER_Y, 0)
+	local mid = (p1 + p2) * 0.5
+	local span = (p2 - p1).Magnitude
+	makePart({
+		Name = &quot;Ramp&quot;,
+		Size = Vector3.new(9, 1, span + 1),
+		CFrame = CFrame.lookAt(mid, p2),
+		Color = Color3.fromRGB(88, 95, 112),
+		Material = Enum.Material.Metal,
+		Parent = arenaFolder,
+	})
+end
+
+-- неоновое кольцо-метка в центре
+makePart({
+	Name = &quot;CenterRing&quot;,
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(0.8, 7, 7),
+	CFrame = CFrame.new(0, CENTER_Y + 0.3, 0) * CFrame.Angles(0, 0, math.rad(90)),
+	Color = Color3.fromRGB(255, 215, 94),
+	Material = Enum.Material.Neon,
+	CanCollide = false,
+	Parent = arenaFolder,
+})
+
+-- колонны-укрытия (между трапами)
+for k = 0, 7 do
+	local a = math.rad(22.5 + 45 * k)
+	makePart({
+		Name = &quot;Pillar&quot;,
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(14, 6, 6),
+		CFrame = CFrame.new(math.cos(a) * 38, 7, math.sin(a) * 38) * CFrame.Angles(0, 0, math.rad(90)),
+		Color = Color3.fromRGB(120, 128, 148),
+		Material = Enum.Material.Concrete,
+		Parent = arenaFolder,
+	})
+end
+
+-- ящики
+local crateData = {
+	{ pos = Vector3.new(-52, 3, 12), rot = 15 },
+	{ pos = Vector3.new(34, 3, -48), rot = -20 },
+	{ pos = Vector3.new(56, 3, 26), rot = 35 },
+	{ pos = Vector3.new(-24, 3, -58), rot = -10 },
+	{ pos = Vector3.new(-62, 3, -18), rot = 40 },
+	{ pos = Vector3.new(8, 3, 56), rot = 25 },
+	{ pos = Vector3.new(-10, 3, -34), rot = 5 },
+	{ pos = Vector3.new(38, 3, 40), rot = -30 },
+}
+for _, c in ipairs(crateData) do
+	makePart({
+		Name = &quot;Crate&quot;,
+		Size = Vector3.new(6, 6, 6),
+		CFrame = CFrame.new(c.pos) * CFrame.Angles(0, math.rad(c.rot), 0),
+		Color = Color3.fromRGB(150, 106, 66),
+		Material = Enum.Material.WoodPlanks,
+		Parent = arenaFolder,
+	})
+end
+
+-- парящие камни для красоты
+local rockData = {
+	{ r = 95, a = 20, y = 16, s = 7 },
+	{ r = 105, a = 70, y = 26, s = 10 },
+	{ r = 92, a = 130, y = 12, s = 5 },
+	{ r = 110, a = 190, y = 30, s = 12 },
+	{ r = 98, a = 250, y = 18, s = 6 },
+	{ r = 104, a = 310, y = 24, s = 9 },
+}
+for _, rock in ipairs(rockData) do
+	local a = math.rad(rock.a)
+	makePart({
+		Name = &quot;Rock&quot;,
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(rock.s, rock.s * 0.8, rock.s),
+		CFrame = CFrame.new(math.cos(a) * rock.r, rock.y, math.sin(a) * rock.r),
+		Color = Color3.fromRGB(66, 70, 84),
+		Material = Enum.Material.Basalt,
+		Parent = arenaFolder,
+	})
+end
+
+-- табличка над центром
+local sign = makePart({
+	Name = &quot;ArenaSign&quot;,
+	Size = Vector3.new(1, 1, 1),
+	CFrame = CFrame.new(0, 42, 0),
+	Transparency = 1,
+	CanCollide = false,
+	CanQuery = false,
+	CanTouch = false,
+	Parent = arenaFolder,
+})
+local billboard = Instance.new(&quot;BillboardGui&quot;)
+billboard.Size = UDim2.fromOffset(520, 110)
+billboard.MaxDistance = 600
+billboard.Adornee = sign
+billboard.Parent = sign
+
+local signLabel = Instance.new(&quot;TextLabel&quot;)
+signLabel.BackgroundTransparency = 1
+signLabel.Size = UDim2.fromScale(1, 1)
+signLabel.Font = Enum.Font.GothamBlack
+signLabel.Text = &quot;PVP ARENA&quot;
+signLabel.TextColor3 = Color3.fromRGB(255, 215, 94)
+signLabel.TextScaled = true
+signLabel.TextStrokeTransparency = 0.35
+signLabel.Parent = billboard
+
+-- 8 спавн-площадок по кругу
+local spawnPads: { SpawnLocation } = {}
+for i = 0, CONFIG.SpawnCount - 1 do
+	local a = (i / CONFIG.SpawnCount) * math.pi * 2
+	local pos = Vector3.new(math.cos(a) * CONFIG.SpawnRadius, 0.2, math.sin(a) * CONFIG.SpawnRadius)
+	local pad = Instance.new(&quot;SpawnLocation&quot;)
+	pad.Name = &quot;SpawnPad&quot; .. tostring(i + 1)
+	pad.Size = Vector3.new(9, 0.6, 9)
+	pad.CFrame = CFrame.lookAt(pos, Vector3.new(0, pos.Y, 0))
+	pad.Anchored = true
+	pad.CanCollide = true
+	pad.Color = Color3.fromRGB(90, 220, 120)
+	pad.Material = Enum.Material.Neon
+	pad.Neutral = true
+	pad.Duration = 3
+	pad.TopSurface = Enum.SurfaceType.Smooth
+	pad.BottomSurface = Enum.SurfaceType.Smooth
+	pad.Parent = arenaFolder
+	table.insert(spawnPads, pad)
+end
+
+-- ============================================================
+--  СТАТИСТИКА И KILLFEED
+-- ============================================================
+
+local function statValue(player: Player, name: string): IntValue?
+	local stats = player:FindFirstChild(&quot;leaderstats&quot;)
+	if not stats then
+		return nil
+	end
+	local v = stats:FindFirstChild(name)
+	if v and v:IsA(&quot;IntValue&quot;) then
+		return v
+	end
+	return nil
+end
+
+local function setupStats(player: Player)
+	local stats = Instance.new(&quot;Folder&quot;)
+	stats.Name = &quot;leaderstats&quot;
+
+	local kills = Instance.new(&quot;IntValue&quot;)
+	kills.Name = &quot;Kills&quot;
+	kills.Parent = stats
+
+	local deaths = Instance.new(&quot;IntValue&quot;)
+	deaths.Name = &quot;Deaths&quot;
+	deaths.Parent = stats
+
+	stats.Parent = player
+
+	local streak = Instance.new(&quot;IntValue&quot;)
+	streak.Name = &quot;Streak&quot;
+	streak.Parent = player
+
+	player:SetAttribute(&quot;BestStreak&quot;, 0)
+end
+
+local function feed(payload: { [string]: any })
+	killFeedRemote:FireAllClients(payload)
+end
+
+local function recordKill(attacker: Player?, victim: Player)
+	local deaths = statValue(victim, &quot;Deaths&quot;)
+	if deaths then
+		deaths.Value += 1
+	end
+
+	local victimStreak = victim:FindFirstChild(&quot;Streak&quot;)
+	if victimStreak and victimStreak:IsA(&quot;IntValue&quot;) then
+		victimStreak.Value = 0
+	end
+
+	local credited = attacker ~= nil and attacker ~= victim and attacker:IsDescendantOf(Players)
+	if credited then
+		local a = attacker :: Player
+		local kills = statValue(a, &quot;Kills&quot;)
+		if kills then
+			kills.Value += 1
+		end
+
+		local s = 0
+		local streak = a:FindFirstChild(&quot;Streak&quot;)
+		if streak and streak:IsA(&quot;IntValue&quot;) then
+			streak.Value += 1
+			s = streak.Value
+		end
+
+		local best = a:GetAttribute(&quot;BestStreak&quot;)
+		if typeof(best) ~= &quot;number&quot; or s &gt; best then
+			a:SetAttribute(&quot;BestStreak&quot;, s)
+		end
+
+		if table.find(CONFIG.StreakAnnounce, s) then
+			feed({ Kind = &quot;Announce&quot;, Text = (&quot;%s — серия %d убийств!&quot;):format(a.DisplayName, s) })
+		end
+
+		feed({ Kind = &quot;Kill&quot;, Text = (&quot;%s → %s&quot;):format(a.DisplayName, victim.DisplayName) })
+	else
+		feed({ Kind = &quot;Kill&quot;, Text = (&quot;%s погиб&quot;):format(victim.DisplayName) })
+	end
+end
+
+-- ============================================================
+--  БОЙ
+-- ============================================================
+
+local lastSwing: { [Player]: number } = {}
+
+local function findTarget(character: Model, attacker: Player): (Model?, Humanoid?)
+	local root = character:FindFirstChild(&quot;HumanoidRootPart&quot;)
+	if not root or not root:IsA(&quot;BasePart&quot;) then
+		return nil, nil
+	end
+	local origin = root.Position
+	local look = root.CFrame.LookVector
+
+	local bestModel: Model? = nil
+	local bestHumanoid: Humanoid? = nil
+	local bestDist = CONFIG.SwordRange
+
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= attacker then
+			local oc = other.Character
+			if oc and oc ~= character then
+				local oh = oc:FindFirstChildOfClass(&quot;Humanoid&quot;)
+				local oroot = oc:FindFirstChild(&quot;HumanoidRootPart&quot;)
+				if oh and oroot and oroot:IsA(&quot;BasePart&quot;) and oh.Health &gt; 0 then
+					local to = oroot.Position - origin
+					local dist = to.Magnitude
+					if dist &gt; 0.01 and dist &lt;= CONFIG.SwordRange then
+						local dir = to / dist
+						if look:Dot(dir) &gt;= CONFIG.SwordArc then
+							local clear = true
+							if dist &gt; 2 then
+								local rp = RaycastParams.new()
+								rp.FilterType = Enum.RaycastFilterType.Exclude
+								rp.FilterDescendantsInstances = { character }
+								local hit = workspace:Raycast(origin, dir * (dist - 1.5), rp)
+								if hit then
+									local hitModel = hit.Instance:FindFirstAncestorOfClass(&quot;Model&quot;)
+									if hitModel ~= oc then
+										clear = false
+									end
+								end
+							end
+							if clear and dist &lt; bestDist then
+								bestDist = dist
+								bestModel = oc
+								bestHumanoid = oh
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestModel, bestHumanoid
+end
+
+local function makeSword(): Tool
+	local tool = Instance.new(&quot;Tool&quot;)
+	tool.Name = &quot;Sword&quot;
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool.ToolTip = (&quot;Меч: урон %d, ЛКМ — удар&quot;):format(CONFIG.SwordDamage)
+
+	local handle = Instance.new(&quot;Part&quot;)
+	handle.Name = &quot;Handle&quot;
+	handle.Size = Vector3.new(0.35, 3.4, 0.35)
+	handle.Color = Color3.fromRGB(90, 220, 255)
+	handle.Material = Enum.Material.Neon
+	handle.CanCollide = false
+	handle.Massless = true
+	handle.Parent = tool
+
+	local guard = Instance.new(&quot;Part&quot;)
+	guard.Name = &quot;Guard&quot;
+	guard.Size = Vector3.new(0.9, 0.25, 0.9)
+	guard.Color = Color3.fromRGB(60, 66, 80)
+	guard.Material = Enum.Material.Metal
+	guard.CanCollide = false
+	guard.Massless = true
+	guard.Parent = tool
+
+	tool.Grip = CFrame.new(0, -1.2, 0)
+	return tool
+end
+
+local function connectSword(tool: Tool, player: Player)
+	tool.Activated:Connect(function()
+		local now = os.clock()
+		if (lastSwing[player] or 0) + CONFIG.SwordCooldown &gt; now then
+			return
+		end
+		lastSwing[player] = now
+
+		local character = player.Character
+		if not character then
+			return
+		end
+		local humanoid = character:FindFirstChildOfClass(&quot;Humanoid&quot;)
+		if not humanoid or humanoid.Health &lt;= 0 then
+			return
+		end
+
+		local target, targetHumanoid = findTarget(character, player)
+		if target and targetHumanoid then
+			target:SetAttribute(&quot;LastAttackerUserId&quot;, player.UserId)
+			target:SetAttribute(&quot;LastAttackerTime&quot;, os.clock())
+			target:SetAttribute(&quot;LastDamageTime&quot;, os.clock())
+			targetHumanoid:TakeDamage(CONFIG.SwordDamage)
+			hitmarkerRemote:FireClient(player)
+		end
+	end)
+end
+
+-- ============================================================
+--  ИГРОКИ
+-- ============================================================
+
+local function onCharacterAdded(player: Player, character: Model)
+	local humanoid = character:WaitForChild(&quot;Humanoid&quot;) :: Humanoid
+	humanoid.WalkSpeed = CONFIG.WalkSpeed
+	humanoid.UseJumpPower = true
+	humanoid.JumpPower = CONFIG.JumpPower
+	character:SetAttribute(&quot;LastDamageTime&quot;, os.clock())
+
+	-- реген HP
+	task.spawn(function()
+		while character.Parent and humanoid.Health &gt; 0 do
+			task.wait(0.5)
+			local last = character:GetAttribute(&quot;LastDamageTime&quot;)
+			local since = os.clock() - (if typeof(last) == &quot;number&quot; then last else 0)
+			if since &gt;= CONFIG.RegenDelay and humanoid.Health &lt; humanoid.MaxHealth then
+				humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + CONFIG.RegenRate * 0.5)
+			end
+		end
+	end)
+
+	-- смерть: записать убийство и выбрать новый спавн
+	humanoid.Died:Connect(function()
+		local lastUserId = character:GetAttribute(&quot;LastAttackerUserId&quot;)
+		local lastTime = character:GetAttribute(&quot;LastAttackerTime&quot;)
+		local attacker: Player? = nil
+		if typeof(lastUserId) == &quot;number&quot; and typeof(lastTime) == &quot;number&quot; and os.clock() - lastTime &lt;= CONFIG.AssistWindow then
+			attacker = Players:GetPlayerByUserId(lastUserId)
+		end
+		recordKill(attacker, player)
+
+		if #spawnPads &gt; 0 then
+			task.defer(function()
+				player.RespawnLocation = spawnPads[math.random(1, #spawnPads)]
+			end)
+		end
+	end)
+
+	-- меч
+	local backpack = player:FindFirstChild(&quot;Backpack&quot;)
+	local hasSword = character:FindFirstChild(&quot;Sword&quot;) or (backpack and backpack:FindFirstChild(&quot;Sword&quot;))
+	if not hasSword and backpack then
+		local tool = makeSword()
+		connectSword(tool, player)
+		tool.Parent = backpack
+		task.defer(function()
+			if humanoid.Health &gt; 0 and tool.Parent == backpack then
+				pcall(function()
+					humanoid:EquipTool(tool)
+				end)
+			end
+		end)
+	end
+end
+
+local function onPlayerAdded(player: Player)
+	setupStats(player)
+	if #spawnPads &gt; 0 then
+		player.RespawnLocation = spawnPads[math.random(1, #spawnPads)]
+	end
+	player.CharacterAdded:Connect(function(character)
+		onCharacterAdded(player, character)
+	end)
+	if player.Character then
+		task.spawn(onCharacterAdded, player, player.Character)
+	end
+end
+
+Players.RespawnTime = CONFIG.RespawnTime
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+	lastSwing[player] = nil
+end)
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, player)
+end
+
+-- падение с арены = смерть
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			if character then
+				local root = character:FindFirstChild(&quot;HumanoidRootPart&quot;)
+				local humanoid = character:FindFirstChildOfClass(&quot;Humanoid&quot;)
+				if root and root:IsA(&quot;BasePart&quot;) and humanoid and humanoid.Health &gt; 0 and root.Position.Y &lt; CONFIG.FallKillY then
+					humanoid.Health = 0
+				end
+			end
+		end
+	end
+end)
+
+print((&quot;[PvP Arena] Арена готова: %d спавнов, урон %d, респавн %d сек&quot;):format(#spawnPads, CONFIG.SwordDamage, CONFIG.RespawnTime))
+</ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="StarterPlayer" referent="RBXSTARTERPLAYER">
+		<Properties>
+			<string name="Name">StarterPlayer</string>
+		</Properties>
+		<Item class="StarterPlayerScripts" referent="RBXSTARTERPLAYERSCRIPTS">
+			<Properties>
+				<string name="Name">StarterPlayerScripts</string>
+			</Properties>
+			<Item class="LocalScript" referent="RBXPVPARENAHUD">
+				<Properties>
+					<string name="Name">PvpArenaHud</string>
+					<bool name="Disabled">false</bool>
+					<ProtectedString name="Source">--!strict
+-- PvP Arena HUD | StarterPlayer &gt; StarterPlayerScripts &gt; LocalScript
+-- Ставится вместе с PvpArenaServer.luau (ServerScriptService &gt; Script).
+-- Рисует: панель статистики, прицел, хитмаркер, killfeed, баннеры серий убийств.
+
+local Players = game:GetService(&quot;Players&quot;)
+local ReplicatedStorage = game:GetService(&quot;ReplicatedStorage&quot;)
+local TweenService = game:GetService(&quot;TweenService&quot;)
+
+local player = Players.LocalPlayer
+
+local remotes = ReplicatedStorage:WaitForChild(&quot;Remotes&quot;)
+local killFeedRemote = remotes:WaitForChild(&quot;KillFeed&quot;) :: RemoteEvent
+local hitmarkerRemote = remotes:WaitForChild(&quot;Hitmarker&quot;) :: RemoteEvent
+
+local COL = {
+	panel = Color3.fromRGB(10, 14, 22),
+	text = Color3.fromRGB(232, 236, 241),
+	accent = Color3.fromRGB(255, 215, 94),
+	danger = Color3.fromRGB(255, 92, 92),
+}
+
+local gui = Instance.new(&quot;ScreenGui&quot;)
+gui.Name = &quot;PvpHud&quot;
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player:WaitForChild(&quot;PlayerGui&quot;)
+
+local function corner(parent: Instance, radius: number)
+	local c = Instance.new(&quot;UICorner&quot;)
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = parent
+end
+
+-- ---------- статистика (слева сверху) ----------
+local statsPanel = Instance.new(&quot;Frame&quot;)
+statsPanel.BackgroundColor3 = COL.panel
+statsPanel.BackgroundTransparency = 0.2
+statsPanel.BorderSizePixel = 0
+statsPanel.Position = UDim2.fromOffset(14, 14)
+statsPanel.Size = UDim2.fromOffset(250, 122)
+statsPanel.Parent = gui
+corner(statsPanel, 10)
+
+local function row(y: number, color: Color3, size: number): TextLabel
+	local l = Instance.new(&quot;TextLabel&quot;)
+	l.BackgroundTransparency = 1
+	l.Position = UDim2.fromOffset(14, y)
+	l.Size = UDim2.new(1, -28, 0, size + 8)
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = size
+	l.TextColor3 = color
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextStrokeTransparency = 0.65
+	l.Text = &quot;&quot;
+	l.Parent = statsPanel
+	return l
+end
+
+local titleLabel = row(8, COL.accent, 16)
+titleLabel.Text = &quot;PVP ARENA&quot;
+local killsLabel = row(38, COL.text, 15)
+local deathsLabel = row(62, COL.text, 15)
+local streakLabel = row(86, COL.danger, 15)
+
+-- ---------- прицел ----------
+local dot = Instance.new(&quot;Frame&quot;)
+dot.AnchorPoint = Vector2.new(0.5, 0.5)
+dot.Position = UDim2.fromScale(0.5, 0.5)
+dot.Size = UDim2.fromOffset(5, 5)
+dot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+dot.BackgroundTransparency = 0.1
+dot.BorderSizePixel = 0
+dot.ZIndex = 5
+dot.Parent = gui
+corner(dot, 3)
+
+local ring = Instance.new(&quot;Frame&quot;)
+ring.AnchorPoint = Vector2.new(0.5, 0.5)
+ring.Position = UDim2.fromScale(0.5, 0.5)
+ring.Size = UDim2.fromOffset(26, 26)
+ring.BackgroundTransparency = 1
+ring.ZIndex = 5
+ring.Parent = gui
+corner(ring, 13)
+local ringStroke = Instance.new(&quot;UIStroke&quot;)
+ringStroke.Thickness = 2
+ringStroke.Color = Color3.fromRGB(255, 255, 255)
+ringStroke.Transparency = 0.55
+ringStroke.Parent = ring
+
+-- ---------- хитмаркер ----------
+local hitmarker = Instance.new(&quot;Frame&quot;)
+hitmarker.AnchorPoint = Vector2.new(0.5, 0.5)
+hitmarker.Position = UDim2.fromScale(0.5, 0.5)
+hitmarker.Size = UDim2.fromOffset(40, 40)
+hitmarker.BackgroundTransparency = 1
+hitmarker.Visible = false
+hitmarker.ZIndex = 6
+hitmarker.Parent = gui
+
+for _, spec in ipairs({ { 7, 7, 45 }, { 7, -7, -45 }, { -7, -7, 45 }, { -7, 7, -45 } }) do
+	local line = Instance.new(&quot;Frame&quot;)
+	line.AnchorPoint = Vector2.new(0.5, 0.5)
+	line.Position = UDim2.new(0.5, spec[1], 0.5, spec[2])
+	line.Size = UDim2.fromOffset(11, 2)
+	line.BackgroundColor3 = COL.danger
+	line.BorderSizePixel = 0
+	line.Rotation = spec[3]
+	line.Parent = hitmarker
+end
+
+local function flashHitmarker()
+	hitmarker.Visible = true
+	for _, child in ipairs(hitmarker:GetChildren()) do
+		if child:IsA(&quot;Frame&quot;) then
+			child.BackgroundTransparency = 0
+			TweenService:Create(child, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+		end
+	end
+	task.delay(0.35, function()
+		hitmarker.Visible = false
+	end)
+end
+
+hitmarkerRemote.OnClientEvent:Connect(flashHitmarker)
+
+-- ---------- killfeed (справа сверху) ----------
+local feedFrame = Instance.new(&quot;Frame&quot;)
+feedFrame.AnchorPoint = Vector2.new(1, 0)
+feedFrame.Position = UDim2.new(1, -14, 0, 14)
+feedFrame.Size = UDim2.fromOffset(340, 300)
+feedFrame.BackgroundTransparency = 1
+feedFrame.ZIndex = 4
+feedFrame.Parent = gui
+
+local layout = Instance.new(&quot;UIListLayout&quot;)
+layout.Padding = UDim.new(0, 6)
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = feedFrame
+
+local feedOrder = 0
+
+local function pushFeed(text: string, highlight: boolean)
+	feedOrder -= 1
+
+	local entry = Instance.new(&quot;TextLabel&quot;)
+	entry.LayoutOrder = feedOrder
+	entry.AutomaticSize = Enum.AutomaticSize.X
+	entry.Size = UDim2.fromOffset(0, 28)
+	entry.BackgroundColor3 = if highlight then COL.accent else COL.panel
+	entry.BackgroundTransparency = if highlight then 0.05 else 0.2
+	entry.BorderSizePixel = 0
+	entry.Font = Enum.Font.GothamBold
+	entry.TextSize = 15
+	entry.TextColor3 = if highlight then Color3.fromRGB(20, 24, 34) else COL.text
+	entry.Text = text
+	entry.Parent = feedFrame
+	corner(entry, 8)
+
+	local pad = Instance.new(&quot;UIPadding&quot;)
+	pad.PaddingLeft = UDim.new(0, 10)
+	pad.PaddingRight = UDim.new(0, 10)
+	pad.Parent = entry
+
+	task.delay(5, function()
+		TweenService:Create(entry, TweenInfo.new(0.4), { BackgroundTransparency = 1, TextTransparency = 1 }):Play()
+	end)
+	task.delay(5.5, function()
+		entry:Destroy()
+	end)
+
+	-- лента не должна разрастаться бесконечно
+	local count = 0
+	local oldest: TextLabel? = nil
+	for _, child in ipairs(feedFrame:GetChildren()) do
+		if child:IsA(&quot;TextLabel&quot;) then
+			count += 1
+			if not oldest or child.LayoutOrder &gt; oldest.LayoutOrder then
+				oldest = child
+			end
+		end
+	end
+	if count &gt; 7 and oldest then
+		oldest:Destroy()
+	end
+end
+
+-- ---------- баннер серий убийств ----------
+local banner = Instance.new(&quot;TextLabel&quot;)
+banner.AnchorPoint = Vector2.new(0.5, 0)
+banner.Position = UDim2.new(0.5, 0, 0, 108)
+banner.Size = UDim2.fromOffset(640, 40)
+banner.BackgroundTransparency = 1
+banner.Font = Enum.Font.GothamBlack
+banner.TextSize = 30
+banner.TextColor3 = COL.accent
+banner.TextStrokeColor3 = Color3.fromRGB(20, 24, 34)
+banner.TextStrokeTransparency = 0.45
+banner.TextTransparency = 1
+banner.Text = &quot;&quot;
+banner.ZIndex = 7
+banner.Parent = gui
+
+local function announce(text: string)
+	banner.Text = text
+	banner.TextTransparency = 0
+	task.delay(2.6, function()
+		TweenService:Create(banner, TweenInfo.new(0.5), { TextTransparency = 1 }):Play()
+	end)
+end
+
+killFeedRemote.OnClientEvent:Connect(function(payload)
+	if typeof(payload) ~= &quot;table&quot; then
+		return
+	end
+	local text = payload.Text
+	if typeof(text) ~= &quot;string&quot; then
+		return
+	end
+	if payload.Kind == &quot;Announce&quot; then
+		announce(text)
+		pushFeed(text, true)
+	else
+		pushFeed(text, false)
+	end
+end)
+
+-- ---------- статистика -&gt; текст ----------
+task.spawn(function()
+	local leaderstats = player:WaitForChild(&quot;leaderstats&quot;)
+	local kills = leaderstats:WaitForChild(&quot;Kills&quot;) :: IntValue
+	local deaths = leaderstats:WaitForChild(&quot;Deaths&quot;) :: IntValue
+	local streak = player:WaitForChild(&quot;Streak&quot;) :: IntValue
+
+	local function render()
+		killsLabel.Text = (&quot;УБИЙСТВА  %d&quot;):format(kills.Value)
+		deathsLabel.Text = (&quot;СМЕРТИ  %d&quot;):format(deaths.Value)
+		local best = player:GetAttribute(&quot;BestStreak&quot;)
+		streakLabel.Text = (&quot;СЕРИЯ  %d  рекорд %d&quot;):format(streak.Value, if typeof(best) == &quot;number&quot; then best else 0)
+	end
+
+	kills:GetPropertyChangedSignal(&quot;Value&quot;):Connect(render)
+	deaths:GetPropertyChangedSignal(&quot;Value&quot;):Connect(render)
+	streak:GetPropertyChangedSignal(&quot;Value&quot;):Connect(render)
+	player:GetAttributeChangedSignal(&quot;BestStreak&quot;):Connect(render)
+	render()
+end)
+
+-- ---------- подсказка управления ----------
+local hint = Instance.new(&quot;TextLabel&quot;)
+hint.AnchorPoint = Vector2.new(0.5, 1)
+hint.Position = UDim2.new(0.5, 0, 1, -16)
+hint.Size = UDim2.fromOffset(660, 20)
+hint.BackgroundTransparency = 1
+hint.Font = Enum.Font.GothamBold
+hint.TextSize = 14
+hint.TextColor3 = COL.text
+hint.TextStrokeTransparency = 0.7
+hint.TextTransparency = 1
+hint.Text = &quot;WASD — движение · ЛКМ — удар · Пробел — прыжок · ПКМ — поворот камеры · меч выдаётся сам&quot;
+hint.ZIndex = 4
+hint.Parent = gui
+
+TweenService:Create(hint, TweenInfo.new(0.6), { TextTransparency = 0.25 }):Play()
+task.delay(14, function()
+	TweenService:Create(hint, TweenInfo.new(1), { TextTransparency = 1 }):Play()
+end)
+</ProtectedString>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

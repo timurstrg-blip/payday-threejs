@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PvP Arena — Three.js (как в Roblox)</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;font-family:Inter,system-ui,Arial,sans-serif;color:#e8ecf1;user-select:none;-webkit-user-select:none}
+  #app{position:fixed;inset:0} canvas{display:block}
+  #hud{position:fixed;top:0;left:0;right:0;display:none;justify-content:space-between;padding:10px 12px;pointer-events:none;align-items:flex-start;gap:10px;z-index:5}
+  #stats{display:flex;gap:10px;flex-wrap:wrap}
+  .panel{background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 12px;backdrop-filter:blur(6px)}
+  .stat-num{font-size:20px;font-weight:800;color:#fff;line-height:1.15}
+  .stat-sub{font-size:11px;letter-spacing:.08em;color:#9fb0c8}
+  #feed{display:flex;flex-direction:column;align-items:flex-end;gap:6px;max-width:46vw}
+  .feed{background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 10px;font-size:13px;font-weight:700;color:#e8ecf1;white-space:nowrap;transition:opacity .45s,transform .45s}
+  .feed.hl{background:#ffd75e;color:#111;border-color:#ffd75e}
+  .feed.fade{opacity:0;transform:translateX(24px)}
+  #cross{position:fixed;inset:0;pointer-events:none;z-index:4;display:none}
+  #crossDot{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#fff;opacity:.9}
+  #crossRing{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:2px solid rgba(255,255,255,.4)}
+  #hit{position:absolute;left:50%;top:50%;width:0;height:0;opacity:0;transition:opacity .25s}
+  #hit::before,#hit::after{content:'';position:absolute;width:16px;height:2px;border-radius:1px;background:#ff5c5c}
+  #hit::before{transform:translate(-8px,-1px) rotate(45deg)}
+  #hit::after{transform:translate(-8px,-1px) rotate(-45deg)}
+  #hit.show{opacity:1;transition:opacity .04s}
+  #vignette{position:fixed;inset:0;pointer-events:none;z-index:3;background:radial-gradient(ellipse at center,rgba(255,0,0,0) 42%,rgba(255,30,30,.55) 100%);opacity:0;transition:opacity .35s}
+  #banner{position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:6;pointer-events:none;font-weight:900;font-size:30px;color:#ffd75e;text-shadow:0 2px 0 rgba(0,0,0,.65);opacity:0;transition:opacity .25s;white-space:nowrap}
+  #banner.show{opacity:1}
+  #respawnOv{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:7;pointer-events:none;font-size:44px;font-weight:900;color:#ff5c5c;text-shadow:0 4px 24px rgba(0,0,0,.85);background:radial-gradient(ellipse at center,rgba(60,0,0,.25),rgba(0,0,0,.55))}
+  #respawnIn{font-size:20px;color:#e8ecf1;font-weight:700;margin-top:10px}
+  #overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(0,0,0,.55),rgba(0,0,0,.88));z-index:10}
+  #card{max-width:640px;width:92%;background:#111725;border:1px solid #2a3550;border-radius:16px;padding:28px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+  #card h1{margin:0 0 6px;font-size:40px;letter-spacing:1px;color:#ffd75e}
+  #card h1 span{color:#fff}
+  #card p{color:#b9c4d6;font-size:14px;line-height:1.6}
+  #card kbd{background:#222c40;border:1px solid #3a4a6b;border-bottom-width:3px;border-radius:6px;padding:1px 7px;font-size:12px;color:#fff}
+  #btn{margin-top:16px;background:#ffd75e;border:0;border-radius:10px;padding:12px 20px;font-weight:800;font-size:16px;cursor:pointer;color:#111}
+  #btn:hover{filter:brightness(1.05)}
+  #pauseCard{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:9;background:rgba(5,8,14,.55);cursor:pointer}
+  #pauseCard .card{background:#111725;border:1px solid #2a3550;border-radius:14px;padding:22px 30px;text-align:center}
+  #pauseCard h2{margin:0 0 6px;color:#ffd75e;font-size:26px;letter-spacing:2px}
+  #pauseCard p{margin:0;color:#b9c4d6;font-size:14px}
+  #topBtns{position:fixed;right:12px;bottom:14px;display:none;gap:8px;z-index:6}
+  #topBtns button{background:rgba(17,23,37,.9);border:1px solid #3a4a6b;color:#fff;border-radius:10px;padding:12px 16px;font-weight:800;font-size:14px;cursor:pointer}
+  #lockHint{position:fixed;bottom:14px;left:12px;z-index:6;font-size:12px;color:#9fb0c8;background:rgba(10,14,22,.7);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 10px;pointer-events:none;max-width:340px}
+  #back{position:fixed;right:12px;bottom:14px;z-index:6;font-size:12px}
+  #back a{color:#9fb0c8;text-decoration:none;background:rgba(10,14,22,.78);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 10px}
+  #joy{position:fixed;left:16px;bottom:60px;width:110px;height:110px;border-radius:50%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);display:none;z-index:6;touch-action:none}
+  #stick{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;background:#ffd75e}
+  @media (pointer:coarse){ #joy{display:block} #lockHint{display:none !important} }
+</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="hud">
+  <div id="stats">
+    <div class="panel"><div class="stat-sub">УБИЙСТВА</div><div class="stat-num" id="killsTxt">0</div></div>
+    <div class="panel"><div class="stat-sub">СМЕРТИ</div><div class="stat-num" id="deathsTxt" style="color:#ff5c5c">0</div></div>
+    <div class="panel"><div class="stat-sub">СЕРИЯ</div><div class="stat-num" id="streakTxt" style="color:#ffd75e">0</div></div>
+    <div class="panel"><div class="stat-sub">РЕКОРД</div><div class="stat-num" id="bestTxt" style="color:#7ab8ff">0</div></div>
+    <div class="panel"><div class="stat-sub">HP</div><div class="stat-num" id="hpTxt" style="color:#37e05b">100</div><div style="width:86px;height:5px;background:#222c40;border-radius:3px;margin-top:5px"><div id="hpFill" style="height:100%;width:100%;background:#37e05b;border-radius:3px;transition:width .15s"></div></div></div>
+  </div>
+  <div id="feed"></div>
+</div>
+
+<div id="cross"><div id="crossDot"></div><div id="crossRing"></div><div id="hit"></div></div>
+<div id="vignette"></div>
+<div id="banner"></div>
+<div id="respawnOv"><div>Ты погиб</div><div id="respawnIn"></div></div>
+<div id="pauseCard"><div class="card"><h2>ПАУЗА</h2><p>Кликни, чтобы продолжить бой</p></div></div>
+<div id="lockHint" style="display:none">Клик по экрану = захват мыши · ESC — пауза</div>
+<div id="topBtns">
+  <button id="mAttack">⚔ Удар</button>
+  <button id="mJump">⬆ Прыжок</button>
+</div>
+<div id="joy"><div id="stick"></div></div>
+<div id="back"><a href="./index.html">← PAYDAY: Block Heist</a></div>
+
+<div id="overlay">
+  <div id="card">
+    <h1>PVP<span> ARENA</span></h1>
+    <p>Three.js-версия роблокс-арены из <b>roblox-pvp-arena/PvpArenaServer.luau</b>: та же карта — круглый остров, центральная платформа, 4 трапа, колонны, ящики, 8 зелёных спавнов. Мечи, killfeed, серии убийств. Против тебя — 5 ботов друг против друга.</p>
+    <p><kbd>WASD</kbd> движение · мышь — камера · <kbd>ЛКМ</kbd> удар · <kbd>Space</kbd> прыжок · <kbd>Shift</kbd> бег. Телефон: стик + кнопки ⚔ и ⬆.</p>
+    <p>Урон меча <b>24</b>, дальность 10 · реген +2 HP/сек через 6 сек без урона · падение с арены = смерть · респавн 3 сек. Серии объявляются на 3/5/7/10/15/20/30.</p>
+    <button id="btn">В БОЙ</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- конфиг (зеркало CONFIG из PvpArenaServer.luau) ----------
+const CONFIG = {
+  arenaRadius: 70, spawnCount: 8, spawnRadius: 55, fallKillY: -45, respawnTime: 3,
+  swordDamage: 24, swordRange: 10, swordArc: 0.35, swordCooldown: 0.45,
+  regenDelay: 6, regenRate: 2, walkSpeed: 18, sprintMult: 1.4,
+  jumpSpeed: 16, gravity: 50, eyeHeight: 1.62,
+  botCount: 5, botHp: 100, botDamage: 12, botRange: 6.5, botCooldown: 1.15, botSpeed: 14.5,
+  streakAnnounce: [3, 5, 7, 10, 15, 20, 30],
+};
+const BOT_NAMES = ['Вася', 'Петя', 'Аня', 'Дима', 'Оля', 'Костя', 'Лена', 'Гриша'];
+const BOT_COLORS = [0x4f8cff, 0xff7a4f, 0xbf6bff, 0x2fd07a, 0xff5a8a, 0x36c5d8, 0xd8c236, 0x9aa4b2];
+const RAMP_ANGLES = [45, 135, 225, 315].map(d => d * Math.PI / 180);
+const CRATES = [[-52, 12, 15], [34, -48, -20], [56, 26, 35], [-24, -58, -10], [-62, -18, 40], [8, 56, 25], [-10, -34, 5], [38, 40, -30]];
+const ROCKS = [[95, 20, 16, 7], [105, 70, 26, 10], [92, 130, 12, 5], [110, 190, 30, 12], [98, 250, 18, 6], [104, 310, 24, 9]];
+
+const $ = id => document.getElementById(id);
+const overlay = $('overlay'), hud = $('hud'), cross = $('cross'), hitEl = $('hit'),
+      vign = $('vignette'), bannerEl = $('banner'), respawnOv = $('respawnOv'),
+      respawnIn = $('respawnIn'), feedBox = $('feed'), lockHint = $('lockHint'),
+      topBtns = $('topBtns'), joy = $('joy'), stick = $('stick'), pauseCard = $('pauseCard');
+
+const isTouch = matchMedia('(pointer:coarse)').matches;
+const now = () => performance.now() / 1000;
+
+let running = false, locked = false;
+let yaw = Math.PI, pitch = -0.04;
+const keys = {};
+let touchMove = { x: 0, y: 0 }, touchJump = false;
+
+const player = { x: 0, z: 55, y: 0.5, vy: 0, grounded: true, hp: 100, alive: true,
+                 respawnIn: 0, lastDamage: 0, kills: 0, deaths: 0, streak: 0, best: 0 };
+let playerSwing = 0, lastAttack = -9;
+const bots = [];
+const obstacles = [];
+
+// ---------- рендер / сцена ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+$('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fb4e0);
+scene.fog = new THREE.Fog(0x8fb4e0, 220, 640);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.08, 2200);
+camera.rotation.order = 'YXZ';
+scene.add(camera);
+
+scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x2a2f3a, 0.9));
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
+sun.position.set(120, 190, 60);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -120; sun.shadow.camera.right = 120;
+sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120;
+sun.shadow.camera.near = 20; sun.shadow.camera.far = 460;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+// ---------- карта (та же геометрия, что строит Lua) ----------
+function std(color, extra = {}) { return new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.85, metalness: 0.05 }, extra)); }
+
+{ // пол
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(70, 70, 4, 72), std(0x48505f, { roughness: 0.95 }));
+  m.position.y = -2; m.receiveShadow = true; scene.add(m);
+}
+{ // неоновый бортик
+  const m = new THREE.Mesh(new THREE.TorusGeometry(69.2, 0.85, 10, 120),
+    new THREE.MeshStandardMaterial({ color: 0xff5a5a, emissive: 0xff2020, emissiveIntensity: 1.4, roughness: 0.4 }));
+  m.rotation.x = Math.PI / 2; m.position.y = 0.8; scene.add(m);
+}
+{ // центральная платформа
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(18, 18, 1.5, 56), std(0x60687a, { roughness: 0.9 }));
+  m.position.y = 7.25; m.castShadow = true; m.receiveShadow = true; scene.add(m);
+}
+{ // неоновое кольцо в центре
+  const m = new THREE.Mesh(new THREE.TorusGeometry(3, 0.35, 8, 40),
+    new THREE.MeshStandardMaterial({ color: 0xffd75e, emissive: 0xffb300, emissiveIntensity: 1.6 }));
+  m.rotation.x = Math.PI / 2; m.position.y = 8.55; scene.add(m);
+}
+const _qy = new THREE.Quaternion(), _qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.atan2(8, 14));
+for (const a of RAMP_ANGLES) { // 4 трапа
+  const span = Math.hypot(14, 8) + 1.2;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(span, 1, 9), std(0x586070, { metalness: 0.25, roughness: 0.7 }));
+  _qy.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -a);
+  m.quaternion.copy(_qy).multiply(_qz);
+  m.position.set(Math.cos(a) * 23, 4, Math.sin(a) * 23);
+  m.castShadow = true; m.receiveShadow = true; scene.add(m);
+}
+for (let k = 0; k < 8; k++) { // колонны
+  const a = (22.5 + 45 * k) * Math.PI / 180;
+  const x = Math.cos(a) * 38, z = Math.sin(a) * 38;
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 14, 24), std(0x78809a, { roughness: 0.9 }));
+  m.position.set(x, 7, z); m.castShadow = true; m.receiveShadow = true; scene.add(m);
+  obstacles.push({ x, z, r: 3.2 });
+}
+for (const [x, z, rot] of CRATES) { // ящики
+  const m = new THREE.Mesh(new THREE.BoxGeometry(6, 6, 6), std(0x966a42, { roughness: 0.95, metalness: 0 }));
+  m.position.set(x, 3, z); m.rotation.y = rot * Math.PI / 180;
+  m.castShadow = true; m.receiveShadow = true; scene.add(m);
+  obstacles.push({ x, z, r: 4.4 });
+}
+const spawnPads = [];
+for (let i = 0; i < CONFIG.spawnCount; i++) { // спавн-площадки
+  const a = i / CONFIG.spawnCount * Math.PI * 2;
+  const x = Math.cos(a) * CONFIG.spawnRadius, z = Math.sin(a) * CONFIG.spawnRadius;
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 4.5, 0.6, 28),
+    new THREE.MeshStandardMaterial({ color: 0x5adc78, emissive: 0x1f9c45, emissiveIntensity: 0.8, roughness: 0.6 }));
+  m.position.set(x, 0.2, z); m.receiveShadow = true; scene.add(m);
+  spawnPads.push({ x, z });
+}
+for (const [r, aDeg, y, s] of ROCKS) { // парящие камни
+  const a = aDeg * Math.PI / 180;
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(s * 0.55, 1), std(0x424654, { flatShading: true, roughness: 1 }));
+  m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+  m.rotation.set(aDeg, aDeg * 1.7, 0);
+  m.castShadow = true; scene.add(m);
+}
+
+// ---------- меч от первого лица ----------
+const swordPivot = new THREE.Group();
+swordPivot.position.set(0.36, -0.32, -0.5);
+swordPivot.rotation.set(0.35, -0.25, 0);
+const vSword = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 1.2),
+  new THREE.MeshStandardMaterial({ color: 0x5adcff, emissive: 0x2299bb, emissiveIntensity: 1.1 }));
+vSword.position.z = -0.55;
+swordPivot.add(vSword);
+camera.add(swordPivot);
+
+// ---------- физика (мини-версия Roblox-коллизий) ----------
+function groundHeight(x, z) {
+  const r = Math.hypot(x, z);
+  if (r > CONFIG.arenaRadius) return -Infinity;
+  if (r <= 18) return 8;
+  if (r <= 30) {
+    const ang = Math.atan2(z, x);
+    for (const base of RAMP_ANGLES) {
+      let d = ang - base;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(r * Math.sin(d)) <= 4.5) return 8 * (30 - r) / 14;
+    }
+  }
+  let h = 0;
+  for (const p of spawnPads) if (Math.hypot(x - p.x, z - p.z) <= 4.5) h = Math.max(h, 0.5);
+  return h;
+}
+function entityMove(ent, vx, vz, dt, avoidVoid = false) {
+  const tryStep = (nx, nz) => {
+    const h = groundHeight(nx, nz);
+    if (avoidVoid && h === -Infinity) return false;
+    if (h - ent.y > 1.6) return false;
+    ent.x = nx; ent.z = nz;
+    return true;
+  };
+  if (!tryStep(ent.x + vx * dt, ent.z + vz * dt)) {
+    if (!tryStep(ent.x + vx * dt, ent.z)) tryStep(ent.x, ent.z + vz * dt);
+  }
+  for (const o of obstacles) {
+    const dx = ent.x - o.x, dz = ent.z - o.z;
+    const d = Math.hypot(dx, dz), min = o.r + 0.7;
+    if (d > 0.0001 && d < min) {
+      const px = o.x + dx / d * min, pz = o.z + dz / d * min;
+      if (groundHeight(px, pz) - ent.y <= 1.6) { ent.x = px; ent.z = pz; }
+    }
+  }
+}
+function entityGravity(ent, dt) {
+  ent.vy -= CONFIG.gravity * dt;
+  ent.y += ent.vy * dt;
+  const h = groundHeight(ent.x, ent.z);
+  if (ent.y <= h) { ent.y = h; ent.vy = 0; ent.grounded = true; }
+  else ent.grounded = false;
+}
+
+// ---------- звук ----------
+let actx = null;
+function initAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+function sfx(type) {
+  if (!actx) return;
+  const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.connect(g); g.connect(actx.destination);
+  if (type === 'hit') { o.type = 'square'; o.frequency.setValueAtTime(880, t); o.frequency.exponentialRampToValueAtTime(620, t + 0.08); g.gain.setValueAtTime(0.11, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1); o.start(t); o.stop(t + 0.11); }
+  else if (type === 'swing') { o.type = 'sawtooth'; o.frequency.setValueAtTime(340, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.12); g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13); o.start(t); o.stop(t + 0.14); }
+  else if (type === 'kill') { o.type = 'triangle'; o.frequency.setValueAtTime(660, t); o.frequency.setValueAtTime(990, t + 0.09); g.gain.setValueAtTime(0.13, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.22); o.start(t); o.stop(t + 0.23); }
+  else if (type === 'hurt') { o.type = 'square'; o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(90, t + 0.16); g.gain.setValueAtTime(0.11, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18); o.start(t); o.stop(t + 0.19); }
+  else if (type === 'die') { o.type = 'sawtooth'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(60, t + 0.5); g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55); o.start(t); o.stop(t + 0.56); }
+}
+
+// ---------- HUD ----------
+const hudCache = {};
+function updateStatsHud() {
+  if (hudCache.k !== player.kills) { hudCache.k = player.kills; $('killsTxt').textContent = player.kills; }
+  if (hudCache.d !== player.deaths) { hudCache.d = player.deaths; $('deathsTxt').textContent = player.deaths; }
+  if (hudCache.s !== player.streak) { hudCache.s = player.streak; $('streakTxt').textContent = player.streak; }
+  if (hudCache.b !== player.best) { hudCache.b = player.best; $('bestTxt').textContent = player.best; }
+}
+function updateHpHud() {
+  const hp = Math.max(0, Math.round(player.hp));
+  if (hudCache.hp === hp) return;
+  hudCache.hp = hp;
+  const col = hp > 55 ? '#37e05b' : hp > 25 ? '#ffd75e' : '#ff5c5c';
+  $('hpTxt').textContent = hp;
+  $('hpTxt').style.color = col;
+  $('hpFill').style.width = Math.max(0, Math.min(100, player.hp)) + '%';
+  $('hpFill').style.background = col;
+}
+function pushFeed(text, hl = false) {
+  const d = document.createElement('div');
+  d.className = 'feed' + (hl ? ' hl' : '');
+  d.textContent = text;
+  feedBox.prepend(d);
+  while (feedBox.children.length > 6) feedBox.lastChild.remove();
+  setTimeout(() => d.classList.add('fade'), 4600);
+  setTimeout(() => d.remove(), 5100);
+}
+let bannerT = null;
+function showBanner(text) {
+  bannerEl.textContent = text;
+  bannerEl.classList.add('show');
+  clearTimeout(bannerT);
+  bannerT = setTimeout(() => bannerEl.classList.remove('show'), 2400);
+}
+let hitT = null;
+function flashHit() {
+  hitEl.classList.add('show');
+  clearTimeout(hitT);
+  hitT = setTimeout(() => hitEl.classList.remove('show'), 170);
+}
+let vignT = null;
+function flashDamage() {
+  vign.style.opacity = '0.95';
+  clearTimeout(vignT);
+  vignT = setTimeout(() => { vign.style.opacity = '0'; }, 130);
+}
+function announceStreak(name, streak) {
+  if (CONFIG.streakAnnounce.includes(streak)) {
+    const text = name + ' — серия ' + streak + ' убийств!';
+    showBanner(text);
+    pushFeed(text, true);
+  }
+}
+
+// ---------- бой ----------
+function attack() {
+  if (!running || !player.alive) return;
+  const t = now();
+  if (t - lastAttack < CONFIG.swordCooldown) return;
+  lastAttack = t;
+  playerSwing = 0.22;
+  sfx('swing');
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+  let best = null, bestD = CONFIG.swordRange + 0.001;
+  for (const b of bots) {
+    if (!b.alive) continue;
+    const dx = b.x - player.x, dz = b.z - player.z;
+    const d = Math.hypot(dx, dz);
+    if (d > CONFIG.swordRange) continue;
+    if ((dx * fx + dz * fz) / Math.max(d, 0.001) < CONFIG.swordArc) continue;
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  if (best) {
+    damageBot(best, CONFIG.swordDamage, 'Ты');
+    flashHit();
+    sfx('hit');
+  }
+}
+function damageBot(bot, amount, attackerName) {
+  if (!bot.alive) return;
+  bot.hp -= amount;
+  bot.lastDamage = now();
+  if (bot.hp <= 0) killBot(bot, attackerName);
+}
+function killBot(bot, attackerName) {
+  bot.alive = false;
+  bot.respawnIn = CONFIG.respawnTime;
+  bot.hp = 0;
+  bot.streak = 0;
+  bot.mesh.visible = false;
+  if (attackerName === 'Ты') {
+    player.kills++;
+    player.streak++;
+    player.best = Math.max(player.best, player.streak);
+    pushFeed('Ты → ' + bot.name + (player.streak > 1 ? ' (' + player.streak + ')' : ''));
+    announceStreak('Ты', player.streak);
+    sfx('kill');
+    updateStatsHud();
+  } else if (attackerName) {
+    const killer = bots.find(b => b.name === attackerName);
+    if (killer) {
+      killer.kills++;
+      killer.streak++;
+      pushFeed(killer.name + ' → ' + bot.name + (killer.streak > 1 ? ' (' + killer.streak + ')' : ''));
+      announceStreak(killer.name, killer.streak);
+    } else {
+      pushFeed(attackerName + ' → ' + bot.name);
+    }
+  } else {
+    pushFeed(bot.name + ' погиб');
+  }
+}
+function respawnBot(bot) {
+  const pad = spawnPads[Math.floor(Math.random() * spawnPads.length)];
+  bot.x = pad.x + (Math.random() * 3 - 1.5);
+  bot.z = pad.z + (Math.random() * 3 - 1.5);
+  bot.y = 0.5; bot.vy = 0;
+  bot.hp = CONFIG.botHp; bot.alive = true;
+  bot.lastDamage = now();
+  bot.mesh.visible = true;
+}
+function killPlayer(feedText) {
+  player.alive = false;
+  player.hp = 0;
+  player.respawnIn = CONFIG.respawnTime;
+  player.deaths++;
+  player.streak = 0;
+  pushFeed(feedText);
+  sfx('die');
+  respawnOv.style.display = 'flex';
+  updateStatsHud();
+}
+function damagePlayer(amount, attackerName) {
+  if (!player.alive) return;
+  player.hp -= amount;
+  player.lastDamage = now();
+  flashDamage();
+  sfx('hurt');
+  if (player.hp <= 0) killPlayer(attackerName + ' → Ты');
+}
+function respawnPlayer() {
+  const pad = spawnPads[Math.floor(Math.random() * spawnPads.length)];
+  player.x = pad.x; player.z = pad.z; player.y = 0.5; player.vy = 0;
+  player.hp = 100; player.alive = true; player.lastDamage = now();
+  respawnOv.style.display = 'none';
+  showBanner('Ты снова в бою!');
+}
+
+// ---------- боты ----------
+function makeBot(name, color, padIndex) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 1.1, 6, 16), std(color, { roughness: 0.65 }));
+  body.position.y = 1.15; body.castShadow = true; group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 18, 14), std(0xf1d3b0));
+  head.position.y = 2.1; head.castShadow = true; group.add(head);
+  const pivot = new THREE.Group();
+  pivot.position.set(0.62, 1.45, 0.15);
+  const sword = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.5),
+    new THREE.MeshStandardMaterial({ color: 0x5adcff, emissive: 0x2299bb, emissiveIntensity: 1.1 }));
+  sword.position.z = -0.75;
+  pivot.add(sword);
+  pivot.rotation.x = 0.55;
+  group.add(pivot);
+
+  const pad = spawnPads[padIndex % spawnPads.length];
+  const bot = { name, mesh: group, pivot,
+    x: pad.x + (Math.random() * 3 - 1.5), z: pad.z + (Math.random() * 3 - 1.5),
+    y: 0.5, vy: 0, grounded: true, hp: CONFIG.botHp, alive: true, respawnIn: 0,
+    lastDamage: 0, cd: 0.6 + Math.random(), swing: 0, kills: 0, streak: 0 };
+  group.position.set(bot.x, bot.y, bot.z);
+  scene.add(group);
+  bots.push(bot);
+}
+function updateBots(dt) {
+  const t = now();
+  for (const b of bots) {
+    if (!b.alive) {
+      b.respawnIn -= dt;
+      if (b.respawnIn <= 0) respawnBot(b);
+      continue;
+    }
+    if (t - b.lastDamage >= CONFIG.regenDelay && b.hp < CONFIG.botHp) {
+      b.hp = Math.min(CONFIG.botHp, b.hp + CONFIG.regenRate * dt);
+    }
+    let target = null, bestD = Infinity;
+    if (player.alive) {
+      const d = Math.hypot(player.x - b.x, player.z - b.z);
+      if (d < bestD) { bestD = d; target = player; }
+    }
+    for (const o of bots) {
+      if (o === b || !o.alive) continue;
+      const d = Math.hypot(o.x - b.x, o.z - b.z);
+      if (d < bestD) { bestD = d; target = o; }
+    }
+    if (target) {
+      const dx = target.x - b.x, dz = target.z - b.z;
+      const d = Math.max(0.001, Math.hypot(dx, dz));
+      b.mesh.rotation.y = Math.atan2(dx, dz);
+      if (d > CONFIG.botRange * 0.8) {
+        entityMove(b, dx / d * CONFIG.botSpeed, dz / d * CONFIG.botSpeed, dt, true);
+      } else {
+        b.cd -= dt;
+        if (b.cd <= 0) {
+          b.cd = CONFIG.botCooldown * (0.85 + Math.random() * 0.3);
+          b.swing = 0.28;
+          if (target === player) damagePlayer(CONFIG.botDamage, b.name);
+          else damageBot(target, CONFIG.botDamage, b.name);
+        }
+      }
+    }
+    entityGravity(b, dt);
+    if (b.y < CONFIG.fallKillY) {
+      b.alive = false; b.respawnIn = CONFIG.respawnTime; b.mesh.visible = false; b.streak = 0;
+      pushFeed(b.name + ' погиб (упал)');
+      continue;
+    }
+    if (b.swing > 0) {
+      b.swing = Math.max(0, b.swing - dt);
+      b.pivot.rotation.x = 0.55 - 1.5 * Math.sin((1 - b.swing / 0.28) * Math.PI);
+    } else b.pivot.rotation.x = 0.55;
+    b.mesh.position.set(b.x, b.y, b.z);
+  }
+}
+
+// ---------- игрок ----------
+function updatePlayer(dt) {
+  if (!player.alive) {
+    player.respawnIn -= dt;
+    respawnIn.textContent = 'респавн через ' + Math.max(0, Math.ceil(player.respawnIn)) + ' с';
+    if (player.respawnIn <= 0) respawnPlayer();
+    return;
+  }
+  if (now() - player.lastDamage >= CONFIG.regenDelay && player.hp > 0 && player.hp < 100) {
+    player.hp = Math.min(100, player.hp + CONFIG.regenRate * dt);
+  }
+  let mf = 0, ms = 0;
+  if (keys.KeyW) mf += 1;
+  if (keys.KeyS) mf -= 1;
+  if (keys.KeyD) ms += 1;
+  if (keys.KeyA) ms -= 1;
+  if (isTouch) { mf -= touchMove.y; ms += touchMove.x; }
+  const speed = CONFIG.walkSpeed * ((keys.ShiftLeft || keys.ShiftRight) ? CONFIG.sprintMult : 1);
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+  const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+  let vx = fx * mf + rx * ms, vz = fz * mf + rz * ms;
+  const vl = Math.hypot(vx, vz);
+  if (vl > 1) { vx /= vl; vz /= vl; }
+  entityMove(player, vx * speed, vz * speed, dt);
+  if ((keys.Space || touchJump) && player.grounded) player.vy = CONFIG.jumpSpeed;
+  entityGravity(player, dt);
+  if (player.y < CONFIG.fallKillY) killPlayer('Ты погиб (упал)');
+  if (playerSwing > 0) {
+    playerSwing = Math.max(0, playerSwing - dt);
+    swordPivot.rotation.x = 0.35 - 1.35 * Math.sin((1 - playerSwing / 0.22) * Math.PI);
+  } else swordPivot.rotation.x = 0.35;
+}
+
+function syncCamera() {
+  camera.position.set(player.x, player.y + CONFIG.eyeHeight, player.z);
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+}
+
+// ---------- ввод ----------
+$('btn').addEventListener('click', () => {
+  overlay.style.display = 'none';
+  hud.style.display = 'flex';
+  cross.style.display = 'block';
+  running = true;
+  initAudio();
+  if (!isTouch) renderer.domElement.requestPointerLock();
+  else { topBtns.style.display = 'flex'; }
+  showBanner('В БОЙ!');
+  setTimeout(() => { if (!isTouch) lockHint.style.display = 'block'; }, 600);
+});
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === renderer.domElement;
+  if (!running || isTouch) return;
+  pauseCard.style.display = locked ? 'none' : 'flex';
+});
+pauseCard.addEventListener('click', () => renderer.domElement.requestPointerLock());
+renderer.domElement.addEventListener('click', () => { if (running && !isTouch && !locked) renderer.domElement.requestPointerLock(); });
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('mousemove', e => {
+  if (!locked) return;
+  yaw -= e.movementX * 0.0023;
+  pitch = Math.max(-1.45, Math.min(1.45, pitch - e.movementY * 0.0023));
+});
+document.addEventListener('mousedown', e => {
+  if (e.button === 0 && (locked || isTouch)) attack();
+});
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+  if (!running && e.code === 'Enter') $('btn').click();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// мобильный стик
+const joyState = { active: false, id: null };
+function joySet(e) {
+  if (!joyState.active) return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== joyState.id) continue;
+    const r = joy.getBoundingClientRect();
+    const dx = t.clientX - (r.left + r.width / 2), dy = t.clientY - (r.top + r.height / 2);
+    const max = r.width / 2 - 20, len = Math.hypot(dx, dy) || 1;
+    const k = Math.min(len, max) / len;
+    const sx = dx * k, sy = dy * k;
+    stick.style.transform = 'translate(' + sx + 'px,' + sy + 'px)';
+    touchMove.x = sx / max;
+    touchMove.y = sy / max;
+    if (e.cancelable) e.preventDefault();
+  }
+}
+joy.addEventListener('touchstart', e => {
+  const t = e.changedTouches[0];
+  joyState.active = true; joyState.id = t.identifier;
+  joySet(e);
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+joy.addEventListener('touchmove', joySet, { passive: false });
+joy.addEventListener('touchend', e => {
+  for (const t of e.changedTouches) if (t.identifier === joyState.id) {
+    joyState.active = false;
+    stick.style.transform = '';
+    touchMove.x = 0; touchMove.y = 0;
+  }
+});
+joy.addEventListener('touchcancel', () => {
+  joyState.active = false; stick.style.transform = '';
+  touchMove.x = 0; touchMove.y = 0;
+});
+// мобильный обзор (правая половина экрана)
+let lookId = null, lx = 0, ly = 0;
+renderer.domElement.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    if (t.clientX > innerWidth * 0.4) { lookId = t.identifier; lx = t.clientX; ly = t.clientY; }
+  }
+}, { passive: true });
+renderer.domElement.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier !== lookId) continue;
+    yaw -= (t.clientX - lx) * 0.006;
+    pitch = Math.max(-1.45, Math.min(1.45, pitch - (t.clientY - ly) * 0.006));
+    lx = t.clientX; ly = t.clientY;
+  }
+}, { passive: true });
+renderer.domElement.addEventListener('touchend', e => {
+  for (const t of e.changedTouches) if (t.identifier === lookId) lookId = null;
+});
+$('mAttack').addEventListener('touchstart', e => { attack(); if (e.cancelable) e.preventDefault(); }, { passive: false });
+$('mJump').addEventListener('touchstart', e => { touchJump = true; if (e.cancelable) e.preventDefault(); }, { passive: false });
+$('mJump').addEventListener('touchend', () => { touchJump = false; });
+$('mAttack').addEventListener('mousedown', e => { e.preventDefault(); attack(); });
+
+// ---------- инициализация ----------
+for (let i = 0; i < CONFIG.botCount; i++) makeBot(BOT_NAMES[i], BOT_COLORS[i], i);
+{
+  const pad = spawnPads[CONFIG.spawnCount - 1];
+  player.x = pad.x; player.z = pad.z; player.y = 0.5;
+}
+pushFeed('Карта скопирована из Roblox-кита: roblox-pvp-arena/', true);
+pushFeed('Убей больше всех — боты дерутся и между собой');
+updateStatsHud();
+
+let lastT = performance.now();
+function tick(nowMs) {
+  requestAnimationFrame(tick);
+  const dt = Math.min((nowMs - lastT) / 1000, 0.05);
+  lastT = nowMs;
+  if (running) {
+    updatePlayer(dt);
+    updateBots(dt);
+    updateHpHud();
+  }
+  syncCamera();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
